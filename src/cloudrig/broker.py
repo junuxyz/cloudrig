@@ -11,13 +11,13 @@ from pathlib import Path
 from cloudrig.models import CrigError, Instance, Offer, provider_name
 from cloudrig.security import child_environment
 
-PUBLIC_ROOT = Path("/var/run/cloudrig")
 ROOT_UID = 0
 HELPER = Path(
     "/Library/PrivilegedHelperTools/cloudrig-admin"
     if sys.platform == "darwin"
     else "/usr/local/libexec/cloudrig-admin"
 )
+PUBLIC_ROOT = HELPER.parent / "cloudrig" if sys.platform == "darwin" else Path("/var/run/cloudrig")
 
 DEFAULT_IMAGES = {
     "vastai": "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime",
@@ -34,7 +34,11 @@ def trusted_root_path(path: Path) -> None:
     for item in (resolved, *resolved.parents):
         info = item.stat()
         if info.st_uid != ROOT_UID or info.st_mode & 0o022:
-            raise CrigError("The cloudrig helper path is not protected by root ownership.")
+            raise CrigError(
+                f"Unprotected cloudrig path: {item} "
+                f"(uid={info.st_uid}, mode={stat.S_IMODE(info.st_mode):04o}). "
+                "Root ownership and no group/world write permission are required."
+            )
 
 
 def rpc(operation: str, provider: str, **values):

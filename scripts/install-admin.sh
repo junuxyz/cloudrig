@@ -4,6 +4,25 @@ set -eu
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 umask 077
+
+restart_launchd() {
+  service=$1
+  plist=$2
+  if launchctl print "$service" >/dev/null 2>&1; then
+    launchctl bootout "$service"
+    remaining=10
+    while launchctl print "$service" >/dev/null 2>&1; do
+      if [ "$remaining" -eq 0 ]; then
+        echo "Service did not finish unloading: $service" >&2
+        return 1
+      fi
+      sleep 1
+      remaining=$((remaining - 1))
+    done
+  fi
+  launchctl bootstrap system "$plist"
+}
+
 if [ "$(id -u)" != 0 ] || [ -z "${SUDO_UID:-}" ] || [ "$SUDO_UID" = 0 ]; then
   echo 'Run: sudo -k sh scripts/install-admin.sh dist/cloudrig-admin' >&2
   exit 1
@@ -23,14 +42,18 @@ if printf '%s\n' "$effective_sudo" | /usr/bin/grep -Eq 'NOPASSWD:|!authenticate'
   exit 1
 fi
 case "$(uname -s)" in
-  Darwin) helper=/Library/PrivilegedHelperTools/cloudrig-admin;;
-  Linux) helper=/usr/local/libexec/cloudrig-admin;;
+  Darwin)
+    helper=/Library/PrivilegedHelperTools/cloudrig-admin
+    runtime_dir=/Library/PrivilegedHelperTools/cloudrig;;
+  Linux)
+    helper=/usr/local/libexec/cloudrig-admin
+    runtime_dir=/var/run/cloudrig;;
   *) echo 'Only macOS and Linux are supported.' >&2; exit 1;;
 esac
-for path in /var/db/cloudrig /var/run/cloudrig "$(dirname "$helper")"; do
+for path in /var/db/cloudrig "$runtime_dir" "$(dirname "$helper")"; do
   if [ -L "$path" ]; then echo "Refusing symlink: $path" >&2; exit 1; fi
 done
-install -d -m 755 "$(dirname "$helper")" /var/db /var/run/cloudrig
+install -d -m 755 "$(dirname "$helper")" "$runtime_dir"
 install -d -m 700 /var/db/cloudrig
 # Verify the target directory cannot be replaced through an unprivileged writable ancestor.
 parent=$(dirname "$helper")
@@ -55,7 +78,7 @@ install -m 755 "$source_binary" "$helper"
 chown root "$helper"
 printf '{"uid":%s,"gid":%s}\n' "$SUDO_UID" "$owner_gid" > /var/db/cloudrig/owner.json
 chmod 600 /var/db/cloudrig/owner.json
-chown -R root /var/db/cloudrig /var/run/cloudrig
+chown -R root /var/db/cloudrig "$runtime_dir"
 mv "$policy" "/etc/sudoers.d/zzz_cloudrig_$SUDO_UID"
 trap - EXIT HUP INT TERM
 /usr/sbin/visudo -c
@@ -72,8 +95,7 @@ if [ "$(uname -s)" = Darwin ]; then
 </dict></plist>
 PLIST
   chown root "$plist"; chmod 644 "$plist"
-  launchctl bootout system/io.cloudrig.admin 2>/dev/null || true
-  launchctl bootstrap system "$plist"
+  restart_launchd system/io.cloudrig.admin "$plist"
 else
   cat > /etc/systemd/system/cloudrig-admin.service <<UNIT
 [Unit]

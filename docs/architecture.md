@@ -80,6 +80,11 @@ There is no provider plugin framework. Two concrete providers share the existing
 The ordinary API permits search, reads, and stopping approved instances. Spending and credential
 changes require the installed privileged command. See [security.md](security.md) for the threat model.
 
+Public runtime files live next to the helper on macOS, under
+`/Library/PrivilegedHelperTools/cloudrig`, and under `/var/run/cloudrig` on Linux.
+The installer creates Cloudrig's own directories and waits for launchd to finish unloading the
+previous service before loading the replacement. Credentials and journals remain in `/var/db/cloudrig`.
+
 ## Keeping changes small
 
 Validate untrusted input once at the appropriate boundary. Domain code can rely on an immutable

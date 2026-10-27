@@ -27,7 +27,11 @@ if the caller knows the protocol and rewrites the complete Python client. JSON f
 and unknown fields are rejected. Provider response environment/registry secrets are not returned.
 
 Root publishes only public keys, pinned server identities, and per-instance signing sockets under
-`/var/run/cloudrig`. OpenSSH agents run as root with the actual private keys and destination/user
+`/Library/PrivilegedHelperTools/cloudrig` on macOS and `/var/run/cloudrig` on Linux.
+macOS's system `/var/run` directory can be group-writable, so it cannot satisfy the strict ancestor
+checks used for public grants. The runtime directory uses the protected helper's parent instead;
+the ownership policy has no group-writable exceptions.
+OpenSSH agents run as root with the actual private keys and destination/user
 constraints. The proxy accepts identity reads, sign requests, and `session-bind@openssh.com` only;
 OpenSSH performs and enforces the cryptography. Mutating/importing keys and other agent extensions
 are denied. Unbound arbitrary signatures are refused by OpenSSH, not a CLI convention.

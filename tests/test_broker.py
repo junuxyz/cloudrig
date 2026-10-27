@@ -1,4 +1,6 @@
+import os
 import subprocess
+import sys
 
 import pytest
 
@@ -48,6 +50,26 @@ def test_user_owned_binary_path_is_not_a_trusted_helper(tmp_path):
     binary.write_text("not a privileged helper")
     with pytest.raises(CrigError):
         broker.trusted_root_path(binary)
+
+
+def test_writable_runtime_parent_reports_the_failing_path(tmp_path, monkeypatch):
+    runtime = tmp_path / "system-run"
+    public = runtime / "cloudrig"
+    public.mkdir(parents=True)
+    runtime.chmod(0o775)
+    monkeypatch.setattr(broker, "ROOT_UID", os.getuid())
+    with pytest.raises(CrigError) as error:
+        broker.trusted_root_path(public)
+    assert str(runtime) in str(error.value)
+    assert "mode=0775" in str(error.value)
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or not broker.HELPER.parent.is_dir(),
+    reason="requires the macOS privileged-helper directory",
+)
+def test_macos_runtime_parent_passes_real_ownership_check():
+    broker.trusted_root_path(broker.PUBLIC_ROOT.parent)
 
 
 def test_helper_never_accepts_arbitrary_command(monkeypatch):

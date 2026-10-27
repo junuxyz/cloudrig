@@ -4,11 +4,18 @@ Current architecture: 0.2.2, native privileged helper and unprivileged Python cl
 
 ## Architecture cleanup
 
-The [maintained suite](architecture.md) passes 75 Python cases, the native race suite, `go vet`,
+The [maintained suite](architecture.md) passes 79 Python cases, the native race suite, `go vet`,
 and Ruff. Duplicate tests and the source-patching mutation harness have been removed.
 Native macOS and Linux amd64 builds and the
 Python package build succeed. A read-only demo command also runs from the built wheel.
-No privileged installation, paid rental, or live provider mutation was performed.
+These tests performed no privileged installation, paid rental, or live provider mutation.
+
+The macOS runtime fix checks the actual protected parent directory and verifies that an unsafe
+ancestor error identifies its path and permissions. A native SSH test republishes an existing grant
+under a new runtime directory without changing its allocation journal. Installer tests exercise
+asynchronous launchd unloading and its timeout before allowing bootstrap. The user attempted a
+privileged reinstall; logs confirmed that immediate bootstrap raced with the previous service's
+shutdown. The corrected installer has not yet been rerun with root authentication.
 
 ## Reliability test execution
 

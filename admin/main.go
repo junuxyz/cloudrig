@@ -9,14 +9,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 )
 
-const (
-	stateRoot = "/var/db/cloudrig"
-	runRoot   = "/var/run/cloudrig"
-)
+const stateRoot = "/var/db/cloudrig"
 
 // This test is run after real root installation, not simulated by the unprivileged unit suite.
 func (s *Store) selfTest() error {
@@ -57,6 +55,10 @@ func main() {
 	if e != nil || cfg.UID < 1 {
 		fmt.Fprintln(os.Stderr, "root-owned installation is not initialized")
 		os.Exit(1)
+	}
+	runRoot := "/var/run/cloudrig"
+	if runtime.GOOS == "darwin" {
+		runRoot = "/Library/PrivilegedHelperTools/cloudrig"
 	}
 	s := newStore(stateRoot, runRoot, cfg)
 	verb := os.Args[1]

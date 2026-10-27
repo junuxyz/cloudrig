@@ -173,9 +173,15 @@ local file operations never run as root. Agent forwarding is disabled, so a remo
 neither the host private key nor a forwarded signing socket. A local AI may authenticate to the
 approved GPU, which is deliberately delegated work authority.
 
-Public connection files are root-published under `/var/run/cloudrig`; user SSH aliases include only
-those public paths. Host-key checking is strict after the helper's initial pin. Initial host-key
+Public connection files are root-published under `/Library/PrivilegedHelperTools/cloudrig` on macOS
+and `/var/run/cloudrig` on Linux. User SSH aliases include only those public paths.
+Host-key checking is strict after the helper's initial pin. Initial host-key
 collection is trust on first use; independent provider fingerprint attestation is not implemented.
+
+If upgrading a macOS installation that used `/var/run/cloudrig`, rebuild and reinstall the helper
+using the [installation commands](#install), then update the CLI. Provider credentials and allocation
+records in `/var/db/cloudrig` are preserved. The new service republishes existing connection grants,
+and connecting through `crig` refreshes the local SSH config. No permissions on `/var/run` need changing.
 
 ## Files and lifecycle
 

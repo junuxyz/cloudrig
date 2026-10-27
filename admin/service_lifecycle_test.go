@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"os"
@@ -10,6 +11,34 @@ import (
 	"testing"
 	"time"
 )
+
+func TestExistingGrantSurvivesRuntimeDirectoryMove(t *testing.T) {
+	s, rec, _, _ := signerRecord(t)
+	journal := filepath.Join(s.Root, "resources.json")
+	before, e := os.ReadFile(journal)
+	if e != nil {
+		t.Fatal(e)
+	}
+	moved := newStore(s.Root, filepath.Join(s.Root, "new-run"), s.Owner)
+	stop, e := moved.startSigner(rec)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(stop)
+	grant := moved.publicGrant(Instance{Provider: rec.Provider, ID: rec.ID})
+	if !strings.HasPrefix(grant.AgentSocket, moved.Run+string(os.PathSeparator)) {
+		t.Fatal("grant still uses the old runtime directory", grant.AgentSocket)
+	}
+	out, e := sshAuthentication(grant.PublicKey, grant.AgentSocket, grant.KnownHosts,
+		keyOf(rec.Provider, rec.ID), grant.User, grant.Port)
+	if e != nil || out != "authenticated\n" {
+		t.Fatal("existing key cannot authenticate after runtime move", out, e)
+	}
+	after, e := os.ReadFile(journal)
+	if e != nil || !bytes.Equal(before, after) {
+		t.Fatal("runtime move changed the allocation journal", e)
+	}
+}
 
 func awaitCondition(t *testing.T, label string, condition func() bool) {
 	t.Helper()
