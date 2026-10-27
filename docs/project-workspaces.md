@@ -9,13 +9,11 @@ cd /Users/USER/Projects/dev/cloudrig
 uv run crig up . --demo --vram 32
 ```
 
-Use the arrow keys to choose an offer. Enter focuses the review button; Enter again opens the
-simulated result. Escape or `q` exits. No rental, SSH, upload, editor launch, or configuration write
+Use the arrow keys to choose an offer. Enter focuses the review button; Enter again confirms the
+demo selection and exits. Escape or `q` exits. No rental, SSH, upload, editor launch, or configuration write
 occurs in demo mode.
 
 ![Project review using fictional offers](project-workspace.svg)
-
-![Simulated result, not a live GPU session](project-ready.svg)
 
 ## Live use
 

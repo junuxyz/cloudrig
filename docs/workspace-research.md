@@ -101,7 +101,7 @@ allocation can be reconciled with `crig up --attach ID` after checking the provi
 authorizing that instance. Neither missing instances nor changed requirements silently rent replacements.
 The project lock serializes concurrent `up` operations on this machine.
 
-The existing marketplace UI and its commands remain available. Demo mode simulates the final result
+The existing marketplace UI and its commands remain available. Demo mode previews the workspace selection
 and never rents, uploads, launches VS Code, or writes configuration.
 
 ## Changes with the highest expected value

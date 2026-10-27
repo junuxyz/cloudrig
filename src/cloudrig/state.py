@@ -17,12 +17,12 @@ def config_dir() -> Path:
     return root / "cloudrig"
 
 
-def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
+def atomic_write(path: Path, text: str) -> None:
     private_directory(path.parent)
     regular_file(path)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(fd, mode)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as stream:
             stream.write(text)
             stream.flush()
@@ -66,8 +66,8 @@ def update(**changes) -> dict:
         return data
 
 
-def provider_or_error(override: str | None = None) -> str:
-    provider = override or load().get("provider")
+def provider_or_error() -> str:
+    provider = load().get("provider")
     if provider not in PROVIDERS:
         raise CrigError("Choose your cloud first: crig --set vastai  or  crig --set runpod")
     return provider

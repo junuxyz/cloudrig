@@ -5,7 +5,7 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, DataTable, Static
 
 from cloudrig.models import Offer
@@ -154,44 +154,3 @@ class WorkspaceApp(App[Offer | None]):
             self.exit(self.offers[self.selected])
         elif event.button.id == "cancel":
             self.exit(None)
-
-
-class DemoReadyApp(App):
-    CSS = """
-    Screen { background: $background; color: $foreground; align: center middle; }
-    #ready { width: 78; height: auto; padding: 2 4; background: $surface; }
-    Static { height: auto; margin-bottom: 1; }
-    #heading { color: $primary; text-style: bold; }
-    #done { border: none; background: $primary; color: $background; }
-    """
-    BINDINGS = [Binding("q,escape", "quit", "Close")]
-
-    def __init__(self, project: Project, offer: Offer):
-        super().__init__()
-        self.project, self.offer = project, offer
-
-    def on_mount(self):
-        for theme in THEMES:
-            self.register_theme(theme)
-        self.theme = "cloudrig"
-
-    def compose(self):
-        p, row = self.project, self.offer
-        with Vertical(id="ready"):
-            yield Static("▲  Your project, on a GPU.", id="heading")
-            yield Static(Text(f"{p.name}  ·  {row.gpu}  ·  {row.region}"))
-            yield Static(
-                "✓ SSH connection checked\n✓ Project uploaded with credential exclusions\n"
-                "✓ NVIDIA GPU and PyTorch CUDA checked\n✓ VS Code opens the project folder"
-            )
-            yield Static(Text(f"$ code --remote ssh-remote+crig-vastai-DEMO {p.remote}"))
-            yield Static(
-                "Next time: crig up .\nStop compute: crig down .\n"
-                "Get changed files: crig NAME pull REMOTE LOCAL"
-            )
-            yield Static("SIMULATED RESULT · Nothing was rented, uploaded, verified, or opened.")
-            yield Button("Done", id="done")
-
-    @on(Button.Pressed)
-    def pressed(self):
-        self.exit()

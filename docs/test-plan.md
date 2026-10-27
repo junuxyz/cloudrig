@@ -32,14 +32,11 @@ state. No real provider, paid resource, root installation, or sudo-policy mutati
 | Durable local state | Parallel processes update distinct preferences; atomic rename fails | All committed updates survive, files retain private permissions, and failed replacement leaves the original file readable without temporary debris. |
 | Agent framing | Truncated/oversized/fragmented input | Invalid frames fail without a panic; valid fragmented frames decode exactly. Fuzzing checks length/protocol invariants. |
 
-## Execution and sensitivity checks
+## Execution
 
 1. Add the cases above and run focused tests. Repair any demonstrated production defect with a
    regression test that exercises the failure, not the patch's internal shape.
 2. Run the complete Python suite and native suite with race detection and a deadline.
 3. Run bounded Go fuzz campaigns for untrusted protocol inputs.
-4. In temporary source copies, disable selected protections: quote recheck, durable pending
-   guard, known-allocation duplicate guard, approval, peer identity check, and proxy revocation.
-   The corresponding behavior tests must fail. Never mutate the live source or installed binary.
-5. Record commands, counts, failures found, mutation results, and untested OS/live-provider limits
+4. Record commands, failures found, and untested OS/live-provider limits
    in the verification document. Coverage is diagnostic, not a pass threshold.

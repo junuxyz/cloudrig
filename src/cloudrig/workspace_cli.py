@@ -27,7 +27,7 @@ from cloudrig.project import (
 )
 from cloudrig.terminal import console, prompt_confirm
 from cloudrig.workspace import Options, launch, preflight
-from cloudrig.workspace_tui import DemoReadyApp, WorkspaceApp
+from cloudrig.workspace_tui import WorkspaceApp
 
 
 def parser() -> argparse.ArgumentParser:
@@ -204,9 +204,7 @@ def dispatch(argv):
                 }
             )
         elif args.demo and args.command == "up" and not args.plain and sys.stdin.isatty():
-            offer = WorkspaceApp(project, rows, demo=True, setup=args.setup).run()
-            if offer:
-                DemoReadyApp(project, offer).run()
+            WorkspaceApp(project, rows, demo=True, setup=args.setup).run()
         else:
             show_plan(project, rows, binding, args.setup)
         return

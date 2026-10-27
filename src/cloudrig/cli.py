@@ -3,7 +3,6 @@ import json
 import shlex
 import shutil
 import sys
-from pathlib import Path
 
 from rich.prompt import Prompt
 from rich.table import Table
@@ -12,6 +11,7 @@ from rich.text import Text
 from cloudrig import __version__, state
 from cloudrig.broker import BrokerProvider
 from cloudrig.connections import (
+    alias,
     full_ssh,
     install_alias,
     open_code,
@@ -94,17 +94,7 @@ Run crig doctor to check local tools.
         help="Open VS Code after rental (default: /workspace)",
     )
     result.add_argument(
-        "--identity",
-        type=Path,
-        help="Deprecated: private-key paths are rejected; keys are managed by the protected helper",
-    )
-    result.add_argument("--send-to-local", nargs=2, metavar=("REMOTE", "LOCAL"), help="Download with rsync")
-    result.add_argument("--send-to-cloud", nargs=2, metavar=("LOCAL", "REMOTE"), help="Upload with rsync")
-    result.add_argument(
         "--dry-run", action="store_true", help="Preview file transfer without modifying files"
-    )
-    result.add_argument(
-        "--clipboard", action="store_true", help="Deprecated: direct SSH/key imports are disabled"
     )
     result.add_argument("--timeout", type=int, default=300, help="Seconds to wait for SSH after renting")
     return result
@@ -115,12 +105,12 @@ def intro():
     console.print("Choose your cloud first.\n")
     console.print("  [bold]crig --set vastai[/]     Vast.ai marketplace")
     console.print("  [bold]crig --set runpod[/]     RunPod GPU cloud\n")
-    console.print("Then run [bold]crig[/] to connect your account, or try [bold]crig --demo --gpu 5090[/].\n")
+    console.print(
+        "Then run [bold]crig login[/] to connect your account, or try [bold]crig --demo --gpu 5090[/].\n"
+    )
 
 
-def login(provider: str, explicit: Path | None = None):
-    if explicit:
-        raise CrigError("Private-key paths are no longer accepted. Keys are managed only by the root helper.")
+def login(provider: str):
     from cloudrig.broker import admin
 
     admin("login", provider)
@@ -187,7 +177,7 @@ def rent(api, rental: Rental, args):
     console.print(Text(f"Rented {rental.name} · {identifier}", style="green"))
     with console.status("Waiting for the approved SSH signer…"):
         instance = wait_ready(api, identifier, timeout=args.timeout)
-    name = install_alias(instance)
+    name = alias(instance)
     if args.code:
         open_code(instance, "/workspace" if args.code == "." else args.code)
     elif sys.stdin.isatty() and not args.yes:
@@ -303,8 +293,6 @@ def doctor():
 def dispatch(args):
     if args.count < 1 or args.disk < 1 or args.timeout < 1:
         raise CrigError("--count, --disk, and --timeout must be positive.")
-    if args.send_to_cloud and args.send_to_local:
-        raise CrigError("Choose one transfer direction per invocation.")
     words = args.words
     if words and words[0] == "self-test":
         from cloudrig.broker import admin
@@ -319,7 +307,9 @@ def dispatch(args):
         if args.demo:
             raise CrigError("--demo never changes configuration. Remove --demo to select a provider.")
         state.update(provider=args.set_provider)
-        console.print(f"[green]✓[/] Default cloud: {args.set_provider}. Run crig to connect your account.")
+        console.print(
+            f"[green]✓[/] Default cloud: {args.set_provider}. Run crig login to connect your account."
+        )
         return
     if not args.demo and not state.load().get("provider") and not args.provider:
         intro()
@@ -328,26 +318,12 @@ def dispatch(args):
         return
     provider = args.provider or ("vastai" if args.demo else state.provider_or_error())
     command = words[0] if words else ""
-    if command in {"login", "logout", "setup"} and args.demo:
+    if command == "login" and args.demo:
         raise CrigError("--demo does not access credentials or register keys.")
     if command == "login":
-        login(provider, args.identity)
+        login(provider)
         return
-    if command == "logout":
-        raise CrigError(
-            "Revoke the key in the provider console. Stored credential changes require crig login and sudo."
-        )
-    if args.identity or args.clipboard:
-        raise CrigError("Unprotected private-key/clipboard connections are disabled. Use crig NAME approve.")
-    try:
-        api = Demo() if args.demo else BrokerProvider(provider)
-    except CrigError:
-        if not words and args.gpu is None and not args.rented and sys.stdin.isatty():
-            login(provider, args.identity)
-            return
-        raise
-    if command == "setup":
-        raise CrigError("Install the protected helper with scripts/install-admin.sh, then use crig login.")
+    api = Demo() if args.demo else BrokerProvider(provider)
     if command == "billing":
         if args.demo:
             console.print("Demo: billing stays with your GPU provider. No browser was opened.")
@@ -393,11 +369,6 @@ def dispatch(args):
         return
     if args.rent:
         raise CrigError("Use --rent with --gpu QUERY so the current offer and price can be reviewed.")
-    if args.send_to_cloud or args.send_to_local:
-        item = resolve(api, words[0] if words else None)
-        direction = "push" if args.send_to_cloud else "pull"
-        action(api, item, direction, args.send_to_cloud or args.send_to_local, args)
-        return
     if words:
         if command in ACTIONS:
             target, selected, paths = None, command, words[1:]

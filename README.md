@@ -182,8 +182,7 @@ collection is trust on first use; independent provider fingerprint attestation i
 ```sh
 crig training push ./ /workspace/project/
 crig training pull /workspace/outputs/ ./outputs/
-crig training --send-to-cloud ./ /workspace/project/ --dry-run
-crig training --send-to-local /workspace/outputs/ ./outputs/
+crig training push ./ /workspace/project/ --dry-run
 
 crig training stop            # Ordinary authority; storage charges may remain
 crig training start           # Fresh sudo and current compute quote
@@ -227,7 +226,5 @@ privileged requests, root-derived quotes, persistent request records, and real O
 agent behavior, including a successful fixture SSH connection and rejected unbound signatures.
 No paid GPU was created and no real provider account was modified.
 
-The [test plan](docs/test-plan.md) records failure cases and their observable outcomes. Run the
-selected deliberate-regression checks with `uv run python scripts/check-test-sensitivity.py`.
-These mutate disposable source copies, never the checkout or installed helper. See
-[verification results](docs/verification.md) for test/fuzz/mutation results and remaining limits.
+The [test plan](docs/test-plan.md) records failure cases and their observable outcomes. See
+[verification results](docs/verification.md) for completed checks and remaining limits.

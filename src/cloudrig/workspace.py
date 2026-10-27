@@ -7,8 +7,8 @@ from dataclasses import dataclass, replace
 from rich.text import Text
 
 from cloudrig.connections import (
+    alias,
     check_rsync,
-    install_alias,
     open_code,
     require,
     run,
@@ -81,7 +81,7 @@ def prepare(project: Project, api, binding: Binding, options: Options) -> Bindin
     )
     with console.status("Checking the approved SSH connection…"):
         item = wait_ready(api, binding.id, timeout=options.timeout)
-    name = install_alias(item)
+    name = alias(item)
     if binding.needs_upload:
         console.print("Uploading the project. Credentials, .git, .venv, and caches are excluded.")
         run(ssh_command(name, f"mkdir -p -- {shlex.quote(project.remote)}"))

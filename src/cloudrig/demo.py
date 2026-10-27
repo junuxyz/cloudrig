@@ -1,11 +1,10 @@
-from cloudrig.broker import BILLING_URLS, DEFAULT_IMAGES
-from cloudrig.models import Instance, Offer, Rental
+from cloudrig.broker import DEFAULT_IMAGES
+from cloudrig.models import Instance, Offer
 
 
 class Demo:
     name = "vastai"
     default_image = DEFAULT_IMAGES[name]
-    billing_url = BILLING_URLS[name]
 
     def offers(self, query: str, disk: int = 40, count: int = 1) -> list[Offer]:
         rows = [
@@ -143,15 +142,3 @@ class Demo:
 
     def instance(self, identifier: str) -> Instance:
         return next(row for row in self.instances() if row.id == identifier)
-
-    def rent(self, rental: Rental) -> str:
-        return "demo-rental"
-
-    def stop(self, identifier: str):
-        pass
-
-    def start(self, identifier: str):
-        pass
-
-    def destroy(self, identifier: str):
-        pass

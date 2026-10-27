@@ -8,7 +8,7 @@ from cloudrig import state, workspace, workspace_cli
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError
 from cloudrig.project import Binding, Phase, candidates, load_project, project_lock, receipt, save_receipt
-from cloudrig.workspace_tui import DemoReadyApp, WorkspaceApp
+from cloudrig.workspace_tui import WorkspaceApp
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def test_existing_receipts_keep_their_allocation_and_environment(project):
 def test_concurrent_up_cannot_submit_another_rental(project, monkeypatch):
     api = Demo()
     monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
-    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Concurrent command rented a GPU"))
+    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Concurrent command rented a GPU"), raising=False)
     with project_lock(project), pytest.raises(CrigError, match="Another command"):
         workspace_cli.dispatch(["up", str(project.root), "--offer", "84021"])
 
@@ -100,18 +100,15 @@ def test_plan_and_demo_never_connect_or_write_config(project, monkeypatch, capsy
     assert not state.config_dir().exists()
 
 
-def test_init_never_overwrites_a_manifest(project):
+def test_init_respects_demo_and_existing_manifest(project):
+    workspace_cli.dispatch(["init", str(project.root), "--demo"])
+    assert not (project.root / "crig.toml").exists()
+    assert not state.config_dir().exists()
     workspace_cli.dispatch(["init", str(project.root)])
     original = (project.root / "crig.toml").read_text()
     with pytest.raises(CrigError, match="already exists"):
         workspace_cli.dispatch(["init", str(project.root)])
     assert (project.root / "crig.toml").read_text() == original
-
-
-def test_init_demo_never_writes_manifest(project):
-    workspace_cli.dispatch(["init", str(project.root), "--demo"])
-    assert not (project.root / "crig.toml").exists()
-    assert not state.config_dir().exists()
 
 
 def test_allocation_receipt_precedes_ssh_and_retry_never_rents_twice(project, monkeypatch):
@@ -130,7 +127,7 @@ def test_allocation_receipt_precedes_ssh_and_retry_never_rents_twice(project, mo
         assert receipt(project).id == "demo-01"
         raise CrigError("SSH timed out")
 
-    monkeypatch.setattr(api, "rent", rent)
+    monkeypatch.setattr(api, "rent", rent, raising=False)
     monkeypatch.setattr(workspace, "prepare", prepare)
     for _ in range(2):
         with pytest.raises(CrigError, match="SSH timed out"):
@@ -147,10 +144,10 @@ def test_ambiguous_paid_submission_is_never_retried(project, monkeypatch):
     def failed(_):
         raise CrigError("Provider timed out after submission")
 
-    monkeypatch.setattr(api, "rent", failed)
+    monkeypatch.setattr(api, "rent", failed, raising=False)
     with pytest.raises(CrigError, match="Provider timed out"):
         workspace_cli.dispatch(["up", str(project.root), "--offer", "84021", "--no-code"])
-    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Duplicate paid submission"))
+    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Duplicate paid submission"), raising=False)
     with pytest.raises(CrigError, match="unresolved"):
         workspace_cli.dispatch(["up", str(project.root), "--offer", "84021", "--no-code"])
 
@@ -158,11 +155,8 @@ def test_ambiguous_paid_submission_is_never_retried(project, monkeypatch):
 def test_reconnect_skips_upload_even_after_cuda_probe_failure(project, monkeypatch):
     save_receipt(project, Binding(Phase.PREPARING, id="demo-01"))
     api = Demo()
-    monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
-    monkeypatch.setattr(workspace_cli, "preflight", lambda **kwargs: None)
     commands = []
     monkeypatch.setattr(workspace, "wait_ready", lambda *a, **kw: api.instance("demo-01"))
-    monkeypatch.setattr(workspace, "install_alias", lambda _: "test-host")
     monkeypatch.setattr(workspace, "ssh_command", lambda *args: ["ssh", *args])
     monkeypatch.setattr(workspace, "sync_command", lambda *a: ["rsync", "project/"])
 
@@ -183,7 +177,6 @@ def test_ready_reconnect_preserves_python_environment_and_remote_files(project, 
     save_receipt(project, Binding(Phase.READY, id="demo-01", python=".venv/bin/python", setup_complete=True))
     api, commands = Demo(), []
     monkeypatch.setattr(workspace, "wait_ready", lambda *a, **kw: api.instance("demo-01"))
-    monkeypatch.setattr(workspace, "install_alias", lambda _: "test-host")
     monkeypatch.setattr(workspace, "ssh_command", lambda *args: ["ssh", *args])
     monkeypatch.setattr(workspace, "sync_command", lambda *a: pytest.fail("Reconnect overwrote remote files"))
     monkeypatch.setattr(workspace, "run", commands.append)
@@ -195,7 +188,7 @@ def test_down_only_stops_project_allocation_and_keeps_binding(project, monkeypat
     save_receipt(project, Binding(Phase.READY, id="demo-01"))
     api, calls = Demo(), []
     monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
-    monkeypatch.setattr(api, "stop", calls.append)
+    monkeypatch.setattr(api, "stop", calls.append, raising=False)
     monkeypatch.setattr("cloudrig.workspace_cli.prompt_confirm", lambda _: None)
     workspace_cli.dispatch(["down", str(project.root)])
     assert calls == ["demo-01"] and receipt(project).id == "demo-01"
@@ -215,7 +208,7 @@ def test_missing_bound_instance_never_falls_back_to_rental(project, monkeypatch)
     api = Demo()
     monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
     monkeypatch.setattr(workspace_cli, "preflight", lambda **kwargs: None)
-    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Rented a replacement"))
+    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Rented a replacement"), raising=False)
     monkeypatch.setattr(api, "instance", lambda _: (_ for _ in ()).throw(CrigError("Missing instance")))
     with pytest.raises(CrigError, match="Missing instance"):
         workspace_cli.dispatch(["up", str(project.root), "--offer", "84021", "--no-code"])
@@ -226,7 +219,7 @@ def test_recover_ambiguous_rental_by_attaching_approved_id(project, monkeypatch)
     api, calls = Demo(), []
     item = replace(api.instance("demo-01"), approved=True)
     monkeypatch.setattr(api, "instance", lambda _: item)
-    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Attach rented another GPU"))
+    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Attach rented another GPU"), raising=False)
     monkeypatch.setattr("cloudrig.workspace_cli.prompt_confirm", lambda _: None)
     monkeypatch.setattr(workspace, "prepare", lambda *a: calls.append(a[2].phase))
     monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
@@ -249,13 +242,9 @@ async def test_workspace_review_is_keyboard_usable(project, size):
     assert app.return_value.id == "84021"
 
 
-async def test_empty_review_cannot_launch_and_ready_screen_is_explicit_simulation(project):
+async def test_empty_review_cannot_launch(project):
     app = WorkspaceApp(project, [], demo=True)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         assert app.query_one("#launch", Button).disabled
         assert "No complete quotes" in str(app.query_one("#summary", Static).render())
-    ready = DemoReadyApp(project, Demo().offers("")[0])
-    async with ready.run_test(size=(90, 30)) as pilot:
-        await pilot.pause()
-        assert any("SIMULATED RESULT" in str(widget.render()) for widget in ready.query(Static))

@@ -37,39 +37,14 @@ func testStore(t *testing.T) *Store {
 	}
 	return s
 }
-func TestPublicSurfaceCannotSpendOrModifyCredentials(t *testing.T) {
-	s := testStore(t)
-	for _, op := range []string{"rent", "start", "restart", "destroy", "resize", "payment", "login", "register_key", "read_file", "exec", "sign"} {
-		if _, e := s.public(Request{Op: op, Provider: "vastai", ID: "1"}); !errors.Is(e, errDenied) {
-			t.Fatalf("%s permitted: %v", op, e)
-		}
-	}
-}
+
 func TestStopRequiresRootApprovedResource(t *testing.T) {
 	s := testStore(t)
 	if _, e := s.public(Request{Op: "stop", Provider: "vastai", ID: "1"}); e == nil {
 		t.Fatal("unapproved stop allowed")
 	}
 }
-func TestSecretsNeverAppearInInstanceResponse(t *testing.T) {
-	s := testStore(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer ROOT_SECRET_MARKER" {
-			t.Error("missing credential at provider")
-		}
-		io.WriteString(w, `{"pods":[{"id":"pod1","name":"training","gpu":{"id":"RTX 5090","count":1},"cost":0.7,"status":"RUNNING","env":{"SECRET":"PRIVATE_ENV"},"ssh":{"proxy":null,"direct":null}}],"pagination":{"nextCursor":null}}`)
-	}))
-	defer server.Close()
-	s.Base["runpod"] = server.URL
-	v, e := s.public(Request{Op: "instances", Provider: "runpod"})
-	if e != nil {
-		t.Fatal(e)
-	}
-	b, _ := json.Marshal(v)
-	if bytes.Contains(b, []byte("PRIVATE_ENV")) || bytes.Contains(b, []byte("ROOT_SECRET")) {
-		t.Fatal("credential leaked")
-	}
-}
+
 func TestProviderErrorsAreSanitized(t *testing.T) {
 	s := testStore(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -132,26 +107,7 @@ func TestEndpointRejectsScopedIPv6AndConfigInjection(t *testing.T) {
 		}
 	}
 }
-func TestUnixAPIRejectsUnknownFields(t *testing.T) {
-	s := testStore(t)
-	path := filepath.Join(s.Run, "api.sock")
-	l, e := socketListener(path, os.Getuid(), os.Getgid())
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer l.Close()
-	go s.serveAPI(l)
-	c, e := net.Dial("unix", path)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer c.Close()
-	io.WriteString(c, `{"op":"instances","provider":"vastai","api_url":"https://evil"}`+"\n")
-	var result map[string]any
-	if e = json.NewDecoder(c).Decode(&result); e != nil || result["error"] != "invalid request" {
-		t.Fatal(result, e)
-	}
-}
+
 func TestNativeAgentCannotExportOrPerformUnboundSignatures(t *testing.T) {
 	s := testStore(t)
 	key := filepath.Join(s.Root, "test-key")

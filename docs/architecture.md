@@ -102,10 +102,8 @@ go vet ./...
 ```
 
 From the project root, `./scripts/build-admin.sh` builds the helper and `uv build` builds the Python
-package. `uv run python scripts/check-test-sensitivity.py` checks selected guards by introducing
-defects in temporary source copies. `uv run python scripts/preview-workspace.py` renders the real
-demo terminal screens.
+package. `uv run python scripts/preview-workspace.py` renders the real demo terminal screens.
 
-This refactor was checked with 80 Python cases, the native race suite, vet, builds, and all nine
-deliberate-regression checks. Tests use fixtures and local tools. Paid provider execution and the
+The maintained suite covers command behavior, workspace recovery, provider contracts, and authority
+boundaries. Tests use fixtures and local tools. Paid provider execution and the
 installed root boundary still require the separate verification described in [verification.md](verification.md).

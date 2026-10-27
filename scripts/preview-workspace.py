@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cloudrig.demo import Demo
 from cloudrig.project import candidates, load_project
-from cloudrig.workspace_tui import DemoReadyApp, WorkspaceApp
+from cloudrig.workspace_tui import WorkspaceApp
 
 
 def capture(app, path, title):
@@ -28,10 +28,6 @@ async def main():
         async with app.run_test(size=(width, height)) as pilot:
             await pilot.pause()
             capture(app, root / "docs" / filename, "Cloudrig project workspace · demo")
-    app = DemoReadyApp(project, offers[0])
-    async with app.run_test(size=(100, 28)) as pilot:
-        await pilot.pause()
-        capture(app, root / "docs" / "project-ready.svg", "Cloudrig · simulated result")
 
 
 if __name__ == "__main__":

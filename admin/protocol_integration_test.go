@@ -55,6 +55,9 @@ func TestUnixAPIEnforcesAuthorityAtTheWire(t *testing.T) {
 	s := testStore(t)
 	var stops syncatomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ROOT_SECRET_MARKER" {
+			t.Error("missing protected credential at provider")
+		}
 		switch {
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v2/pods"):
 			json.NewEncoder(w).Encode(map[string]any{"pods": []any{map[string]any{"id": "pod1", "name": "training", "gpu": map[string]any{"id": "5090", "count": 2}, "cost": 0.8, "status": "RUNNING", "env": map[string]string{"KEY": "PROVIDER_SECRET"}}}})
@@ -87,7 +90,7 @@ func TestUnixAPIEnforcesAuthorityAtTheWire(t *testing.T) {
 			t.Fatal("wire credential leak", secret)
 		}
 	}
-	for _, op := range []string{"rent", "start", "destroy", "approve", "login", "resize", "payment", "exec", "batch", "approve_all"} {
+	for _, op := range []string{"rent", "start", "restart", "destroy", "approve", "login", "resize", "payment", "exec", "batch", "approve_all", "register_key", "read_file", "sign"} {
 		body, _ := json.Marshal(map[string]any{"op": op, "provider": "runpod", "id": "pod1"})
 		if result := callTestAPI(t, path, string(body)); result["error"] == nil {
 			t.Errorf("ordinary wire operation %s was accepted: %#v", op, result)

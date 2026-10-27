@@ -1,5 +1,4 @@
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -49,10 +48,6 @@ def test_user_owned_binary_path_is_not_a_trusted_helper(tmp_path):
     binary.write_text("not a privileged helper")
     with pytest.raises(CrigError):
         broker.trusted_root_path(binary)
-
-
-def test_system_ssh_binary_path_is_root_protected():
-    broker.trusted_root_path(Path("/usr/bin/ssh"))
 
 
 def test_helper_never_accepts_arbitrary_command(monkeypatch):

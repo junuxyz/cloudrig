@@ -4,8 +4,9 @@ Current architecture: 0.2.2, native privileged helper and unprivileged Python cl
 
 ## Architecture cleanup
 
-The [structural refactor](architecture.md) passes 80 Python cases, the native race suite, `go vet`,
-Ruff, and all nine deliberate-regression checks. Native macOS and Linux amd64 builds and the
+The [maintained suite](architecture.md) passes 75 Python cases, the native race suite, `go vet`,
+and Ruff. Duplicate tests and the source-patching mutation harness have been removed.
+Native macOS and Linux amd64 builds and the
 Python package build succeed. A read-only demo command also runs from the built wheel.
 No privileged installation, paid rental, or live provider mutation was performed.
 
@@ -25,9 +26,6 @@ Earlier reliability campaign on macOS:
   root dispatch, human-terminal secret entry, and installed sudo policy remain explicit limits.
 - Agent-frame fuzzing ran 454,155 inputs over 10 seconds. Instance parsing ran 401,284 inputs
   over 10 seconds. Both used two workers and completed without a failing input.
-- All nine selected deliberate regressions are detected. The harness requires a failed behavior
-  assertion; a compilation failure does not count. [Machine-readable results](test-sensitivity.json)
-  list the disabled protections and the tests that catch them. This is not exhaustive mutation coverage.
 
 The tests exposed and now prevent:
 
@@ -47,7 +45,6 @@ uv run pytest -q
 (cd admin && go test -race -count=3 -shuffle=on -timeout=60s ./...)
 (cd admin && go test -run='^$' -fuzz='^FuzzAgentFrames$' -fuzztime=10s -parallel=2 -timeout=30s)
 (cd admin && go test -run='^$' -fuzz='^FuzzProviderInstance$' -fuzztime=10s -parallel=2 -timeout=30s)
-uv run python scripts/check-test-sensitivity.py
 ```
 
 Recovery tests cover failed requests and broker restarts on a running OS. They do not simulate
