@@ -1,0 +1,52 @@
+{
+  "checked_at_utc": "2026-10-27T09:17:32.483330+00:00",
+  "baseline": "passed",
+  "cases": [
+    {
+      "fault": "approval replay accepted",
+      "test": "^TestEachOperationRequiresItsOwnApproval$",
+      "status": "detected"
+    },
+    {
+      "fault": "resource cancellation ignored",
+      "test": "^TestCancellationPreservesAuthorityAndNeverMutatesProvider$",
+      "status": "detected"
+    },
+    {
+      "fault": "ambiguous allocation guard disabled",
+      "test": "^TestAmbiguousRentalSurvivesBrokerRestartAndUnrelatedRental$",
+      "status": "detected"
+    },
+    {
+      "fault": "known allocation guard disabled",
+      "test": "^TestKnownAllocationCannotBeDuplicatedWhenProviderListingIsStale$",
+      "status": "detected"
+    },
+    {
+      "fault": "start price recheck disabled",
+      "test": "^TestStartPriceRecheckPreventsUnapprovedSpending$",
+      "status": "detected"
+    },
+    {
+      "fault": "fractional GPU counts accepted",
+      "test": "^TestRunPodStartRequiresVerifiableGPUCountAndExactCloudPrice$",
+      "status": "detected"
+    },
+    {
+      "fault": "kernel peer identity ignored",
+      "test": "^TestUnixAPICannotImpersonateConfiguredOwner$",
+      "status": "detected"
+    },
+    {
+      "fault": "open signer ignores revocation",
+      "test": "^TestOpenSignerConnectionsLoseAuthorityImmediatelyOnRecordChanges$",
+      "status": "detected"
+    },
+    {
+      "fault": "private allocation GPU count changed",
+      "test": "^TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant$/runpod$",
+      "status": "detected"
+    }
+  ],
+  "scope": "Selected manual mutations in temporary copies; not exhaustive mutation coverage."
+}
