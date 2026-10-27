@@ -131,8 +131,8 @@ reliable enough, adopt it.
 
 ## Verification and current limits
 
-The prototype passes 24 new behavior and terminal interaction cases and the combined 77-test
-Python suite. The existing native suite passes under the race detector, and `go vet` passes.
+The initial prototype passed 24 new behavior and terminal interaction cases and the combined 77-test
+Python suite. The native suite passed under the race detector, and `go vet` passed.
 Ruff passes for the Python code and preview script. Real terminal rendering was inspected at
 desktop and compact sizes. The local machine has rsync 3.5.1 and VS Code's Remote SSH extension.
 

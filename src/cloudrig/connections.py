@@ -5,13 +5,12 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from filelock import FileLock
 
 from cloudrig import broker
 from cloudrig.models import CrigError, Instance, safe_text
-from cloudrig.security import child_environment, private_directory, regular_file
+from cloudrig.security import check_transfer_path, child_environment, private_directory, regular_file
 from cloudrig.state import atomic_write
 
 
@@ -30,10 +29,7 @@ def run(argv: list[str]) -> None:
 
 
 def alias(instance: Instance) -> str:
-    suffix = instance.id
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}", suffix):
-        raise CrigError("Provider returned an invalid instance ID.")
-    return f"crig-{instance.provider}-{suffix}"
+    return f"crig-{instance.provider}-{instance.id}"
 
 
 def validate_endpoint(instance: Instance) -> None:
@@ -82,7 +78,7 @@ def verify_grant(instance: Instance) -> tuple[Path, Path, Path]:
     return public, agent, known
 
 
-def install_alias(instance: Instance, identity: Path | None = None) -> str:
+def install_alias(instance: Instance) -> str:
     validate_endpoint(instance)
     require("ssh")
     public, agent, known = verify_grant(instance)
@@ -163,7 +159,7 @@ def ssh_command(name: str, *arguments: str, tty: bool = False) -> list[str]:
     return [*argv, name, *arguments]
 
 
-def wait_ready(provider, identifier: str, identity: Path | None = None, timeout: float = 300) -> Instance:
+def wait_ready(provider, identifier: str, timeout: float = 300) -> Instance:
     deadline = time.monotonic() + timeout
     while True:
         item = provider.instance(identifier)
@@ -179,7 +175,7 @@ def wait_ready(provider, identifier: str, identity: Path | None = None, timeout:
             and item.public_key
             and Path(item.public_key).is_file()
         ):
-            name = install_alias(item, identity)
+            name = install_alias(item)
             result = subprocess.run(
                 [
                     require("ssh"),
@@ -212,9 +208,9 @@ def full_ssh(instance: Instance) -> None:
         raise CrigError("This pod exposes proxy SSH only. Expose 22/tcp for VS Code, commands, or rsync.")
 
 
-def open_code(instance: Instance, identity: Path, remote_path: str) -> None:
+def open_code(instance: Instance, remote_path: str) -> None:
     full_ssh(instance)
-    name = install_alias(instance, identity)
+    name = install_alias(instance)
     if not remote_path.startswith("/") or any(ord(c) < 32 for c in remote_path):
         raise CrigError("Use an absolute remote workspace path, for example /workspace/project.")
     run(["code", "--remote", f"ssh-remote+{name}", remote_path])
@@ -285,7 +281,6 @@ def check_remote_rsync(name: str) -> None:
 
 def sync_command(
     instance: Instance,
-    identity: Path,
     local: str,
     remote: str,
     upload: bool,
@@ -294,30 +289,8 @@ def sync_command(
     full_ssh(instance)
     if not remote.startswith("/") or any(c in remote for c in "\n\r\x00"):
         raise CrigError("Use an absolute remote path, for example /workspace/project/.")
-    local_path = Path(local).expanduser().resolve()
-    home = Path.home().resolve()
-    protected_roots = [home / name for name in (".ssh", ".aws", ".azure", ".kube", ".gnupg", ".config")]
-    sensitive_names = {
-        ".bashrc",
-        ".bash_profile",
-        ".zshrc",
-        ".zprofile",
-        ".profile",
-        ".gitconfig",
-        ".git-credentials",
-        ".netrc",
-        ".npmrc",
-        ".pypirc",
-    }
-    if (
-        local_path in {home, Path("/")}
-        or local_path.name in sensitive_names
-        or any(local_path == root or root in local_path.parents for root in protected_roots)
-    ):
-        raise CrigError(
-            "Refusing a home, credential, or shell-configuration path. Choose a project directory."
-        )
-    name = install_alias(instance, identity)
+    check_transfer_path(Path(local).expanduser().resolve())
+    name = install_alias(instance)
     require("rsync")
     check_rsync()
     check_remote_rsync(name)
@@ -342,75 +315,3 @@ def sync_command(
     if local.endswith("/") and not argv[local_index].endswith("/"):
         argv[local_index] += "/"
     return argv
-
-
-def parse_ssh(value: str, provider: str, identifier: str) -> tuple[Instance, Path | None]:
-    """Accept a narrow SSH form. Never execute clipboard contents or preserve arbitrary options."""
-    identity = None
-    if any(ord(c) < 32 or ord(c) == 127 for c in value):
-        raise CrigError("SSH clipboard input cannot contain control characters.")
-    if value.startswith("ssh://"):
-        parsed = urlsplit(value.strip())
-        if parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-            raise CrigError("SSH URLs must contain only a user, host, and port.")
-        try:
-            port = parsed.port if parsed.port is not None else 22
-        except ValueError as error:
-            raise CrigError("Invalid SSH URL port.") from error
-        item = Instance(
-            identifier,
-            provider,
-            identifier,
-            "GPU",
-            1,
-            "running",
-            0,
-            "",
-            parsed.hostname,
-            port,
-            parsed.username or "root",
-        )
-    else:
-        try:
-            parts = shlex.split(value.strip())
-        except ValueError as error:
-            raise CrigError("Malformed quoting in SSH command.") from error
-        if not parts or parts.pop(0) != "ssh":
-            raise CrigError("Expected ssh user@host -p PORT -i KEY, or an ssh:// URL.")
-        user, host, port = "root", None, 22
-        while parts:
-            part = parts.pop(0)
-            if part in {"-p", "-i"}:
-                if not parts:
-                    raise CrigError(f"Missing value for {part}.")
-                arg = parts.pop(0)
-                if part == "-p":
-                    try:
-                        port = int(arg)
-                    except ValueError as error:
-                        raise CrigError("Invalid SSH port.") from error
-                else:
-                    identity = Path(arg).expanduser()
-            elif not part.startswith("-") and "@" in part and host is None:
-                user, host = part.rsplit("@", 1)
-                host = host.removeprefix("[").removesuffix("]")
-            else:
-                raise CrigError("Unsupported SSH option or trailing command. Use user@host -p PORT -i KEY.")
-        item = Instance(identifier, provider, identifier, "GPU", 1, "running", 0, "", host, port, user)
-    validate_endpoint(item)
-    return item, identity
-
-
-def clipboard() -> str:
-    for argv in (["pbpaste"], ["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]):
-        if shutil.which(argv[0]):
-            result = subprocess.run(
-                argv, capture_output=True, text=True, check=False, env=child_environment()
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-    raise CrigError("No clipboard reader available. Install wl-paste or xclip on Linux.")
-
-
-def with_connection(provider, instance: Instance) -> Instance:
-    return provider.instance(instance.id)

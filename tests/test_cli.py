@@ -22,7 +22,7 @@ def test_first_run_and_set_do_not_require_credentials(capsys):
 
 
 def test_demo_never_contacts_privileged_service(monkeypatch, capsys):
-    monkeypatch.setattr("cloudrig.cli.connect", lambda _: pytest.fail("Demo contacted service"))
+    monkeypatch.setattr("cloudrig.cli.BrokerProvider", lambda _: pytest.fail("Demo contacted service"))
     dispatch(args("--demo", "--gpu", "5090", "--json"))
     assert len(json.loads(capsys.readouterr().out)) == 5
     dispatch(args("--demo", "--rented", "--plain"))

@@ -2,13 +2,20 @@
 
 Current architecture: 0.2.2, native privileged helper and unprivileged Python client.
 
+## Architecture cleanup
+
+The [structural refactor](architecture.md) passes 80 Python cases, the native race suite, `go vet`,
+Ruff, and all nine deliberate-regression checks. Native macOS and Linux amd64 builds and the
+Python package build succeed. A read-only demo command also runs from the built wheel.
+No privileged installation, paid rental, or live provider mutation was performed.
+
 ## Reliability test execution
 
 The [plan](test-plan.md) was written before the new tests. Tests exercise real local HTTP/Unix
 servers, persistent files, independent processes, native OpenSSH clients/agents, and SSH test
 servers. Provider servers use synthetic credentials and local endpoints only.
 
-Latest completed checks on macOS:
+Earlier reliability campaign on macOS:
 
 - Python: 49 tests pass. Parallel subprocesses preserve every committed preference; a failed
   atomic rename leaves the original state readable and removes temporary debris.

@@ -1,17 +1,16 @@
 import argparse
 import json
-import re
 import shlex
 import shutil
 import sys
 from pathlib import Path
 
-from rich.console import Console
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
 
 from cloudrig import __version__, state
+from cloudrig.broker import BrokerProvider
 from cloudrig.connections import (
     full_ssh,
     install_alias,
@@ -23,10 +22,9 @@ from cloudrig.connections import (
 )
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError, Instance, InstanceAction, Rental
-from cloudrig.providers import connect
+from cloudrig.terminal import console, prompt_confirm
 from cloudrig.tui import CloudrigApp, rate, sorted_offers
 
-console = Console(highlight=False)
 ACTIONS = {"ssh", "code", "exec", "agent", "push", "pull", "start", "stop", "destroy", "approve"}
 
 
@@ -120,15 +118,6 @@ def intro():
     console.print("Then run [bold]crig[/] to connect your account, or try [bold]crig --demo --gpu 5090[/].\n")
 
 
-def prompt_confirm(message: str, yes: bool = False):
-    if yes:
-        return
-    if not sys.stdin.isatty():
-        raise CrigError("Confirmation requires a terminal. Use --yes only for an intended operation.")
-    if not Confirm.ask(Text(message), default=False):
-        raise CrigError("Cancelled. No operation was submitted.")
-
-
 def login(provider: str, explicit: Path | None = None):
     if explicit:
         raise CrigError("Private-key paths are no longer accepted. Keys are managed only by the root helper.")
@@ -200,7 +189,7 @@ def rent(api, rental: Rental, args):
         instance = wait_ready(api, identifier, timeout=args.timeout)
     name = install_alias(instance)
     if args.code:
-        open_code(instance, None, "/workspace" if args.code == "." else args.code)
+        open_code(instance, "/workspace" if args.code == "." else args.code)
     elif sys.stdin.isatty() and not args.yes:
         run(ssh_command(name))
 
@@ -232,14 +221,13 @@ def action(api, item: Instance, name: str, paths: list[str], args):
         getattr(api, name)(item.id)
         console.print(Text(f"✓ {name.capitalize()} request accepted for {item.name}.", style="green"))
         return
-    identity = None
     fresh = api.instance(item.id)
     if fresh.status != "running":
         raise CrigError(f"Instance is {fresh.status}. Start it with crig {item.id} start.")
     state.remember_instance(api.name, item.id)
     if name == "code":
         remote = paths[0] if paths else "/workspace"
-        open_code(fresh, identity, "/workspace" if remote == "." else remote)
+        open_code(fresh, "/workspace" if remote == "." else remote)
     elif name in {"push", "pull"}:
         if len(paths) != 2:
             if not sys.stdin.isatty():
@@ -255,11 +243,11 @@ def action(api, item: Instance, name: str, paths: list[str], args):
                     Prompt.ask("Local destination", default="./outputs/"),
                 ]
         local, remote = paths if name == "push" else paths[::-1]
-        argv = sync_command(fresh, identity, local, remote, name == "push", args.dry_run)
+        argv = sync_command(fresh, local, remote, name == "push", args.dry_run)
         console.print(Text(shlex.join(argv), style="dim"))
         run(argv)
     else:
-        alias_name = install_alias(fresh, identity)
+        alias_name = install_alias(fresh)
         if name == "ssh":
             run(ssh_command(alias_name))
             console.print(f"Instance still rented. Stop: crig {item.id} stop", markup=False)
@@ -352,7 +340,7 @@ def dispatch(args):
     if args.identity or args.clipboard:
         raise CrigError("Unprotected private-key/clipboard connections are disabled. Use crig NAME approve.")
     try:
-        api = Demo() if args.demo else connect(provider)
+        api = Demo() if args.demo else BrokerProvider(provider)
     except CrigError:
         if not words and args.gpu is None and not args.rented and sys.stdin.isatty():
             login(provider, args.identity)
@@ -387,13 +375,7 @@ def dispatch(args):
                 if not offer:
                     raise CrigError("The selected offer is not in the search results. Refresh the search.")
                 name = args.name or f"gpu-{offer.id.split('|')[-1].lower()}"
-                if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}", name):
-                    raise CrigError(
-                        "Use a workspace name with letters, numbers, '-' or '_', up to 63 characters."
-                    )
                 rental = Rental(offer, name, args.disk, args.image or api.default_image)
-                if not rental.image or any(char.isspace() for char in rental.image):
-                    raise CrigError("Enter a valid container image without spaces.")
                 console.print(Text(f"{offer.title} · {offer.region} · {rate(offer, args.disk)}/hr estimated"))
                 console.print(Text(f"Name: {name} · Disk: {args.disk} GB · Image: {rental.image}"))
                 console.print(
@@ -439,7 +421,7 @@ def dispatch(args):
 def main():
     try:
         if sys.argv[1:2] and sys.argv[1] in {"init", "plan", "up", "down", "forget"}:
-            from cloudrig.workspace import dispatch as workspace_dispatch
+            from cloudrig.workspace_cli import dispatch as workspace_dispatch
 
             workspace_dispatch(sys.argv[1:])
             return

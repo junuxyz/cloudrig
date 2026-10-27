@@ -10,27 +10,27 @@ from textual.widgets import Button, DataTable, Static
 
 from cloudrig.models import Offer
 from cloudrig.project import Project
-from cloudrig.tui import THEMES
+from cloudrig.tui import THEMES, palette
 
 
 class WorkspaceApp(App[Offer | None]):
     TITLE = "cloudrig · project workspace"
     CSS = """
-    Screen { background: #0a0a0a; color: #eeeeee; }
+    Screen { background: $background; color: $foreground; }
     #page { padding: 1 3; }
-    #brand { height: 1; color: #fab283; text-style: bold; }
+    #brand { height: 1; color: $primary; text-style: bold; }
     #title { height: 2; text-style: bold; }
-    #subtitle { height: auto; margin-bottom: 1; color: #aaaaaa; }
+    #subtitle { height: auto; margin-bottom: 1; color: $foreground-muted; }
     #body { height: auto; min-height: 8; }
-    #offers { width: 2fr; height: auto; max-height: 12; background: #141414; }
-    #summary { width: 1fr; height: auto; margin-left: 2; padding: 1 2; background: #141414; }
-    #details { height: auto; margin-top: 1; padding: 1 2; background: #141414; }
-    #note { height: auto; color: #aaaaaa; margin-top: 1; }
+    #offers { width: 2fr; height: auto; max-height: 12; background: $surface; }
+    #summary { width: 1fr; height: auto; margin-left: 2; padding: 1 2; background: $surface; }
+    #details { height: auto; margin-top: 1; padding: 1 2; background: $surface; }
+    #note { height: auto; color: $foreground-muted; margin-top: 1; }
     #actions { height: 3; margin-top: 1; }
     Button { margin-right: 2; border: none; }
-    #launch { background: #fab283; color: #0a0a0a; min-width: 29; }
-    #cancel { background: #242424; color: #cccccc; }
-    #footer { height: auto; color: #777777; margin-top: 1; }
+    #launch { background: $primary; color: $background; min-width: 29; }
+    #cancel { background: $panel; color: $foreground; }
+    #footer { height: auto; color: $foreground-muted; margin-top: 1; }
     .compact #body { layout: vertical; }
     .compact #offers { width: 1fr; }
     .compact #summary { width: 1fr; margin: 1 0 0 0; padding: 0 1; }
@@ -107,12 +107,13 @@ class WorkspaceApp(App[Offer | None]):
 
     def update_details(self):
         p = self.project
+        colors = palette(self)
         if self.offers:
             row = self.offers[self.selected]
             total = row.total(p.disk)
             compact = self.size.width < 100
-            summary = Text("SESSION ESTIMATE  " if compact else "SESSION ESTIMATE\n\n", style="#aaaaaa")
-            summary.append(f"${total * p.hours:.2f}", style="bold #fab283")
+            summary = Text("SESSION ESTIMATE  " if compact else "SESSION ESTIMATE\n\n", style=colors["muted"])
+            summary.append(f"${total * p.hours:.2f}", style=f"bold {colors['primary']}")
             summary.append(f" / {p.hours:g} hours" + ("  ·  " if compact else "\n\n"))
             summary.append(f"${total:.3f}/hr with quoted disk")
             if not compact:
@@ -123,7 +124,7 @@ class WorkspaceApp(App[Offer | None]):
                 "No complete quotes match.\nRaise --max-hourly or change --vram."
             )
         grid = Table.grid(padding=(0, 3))
-        grid.add_column(style="#888888")
+        grid.add_column(style=colors["muted"])
         grid.add_column()
         if self.size.width >= 100:
             grid.add_row("Project", Text(str(p.root)))
@@ -157,17 +158,22 @@ class WorkspaceApp(App[Offer | None]):
 
 class DemoReadyApp(App):
     CSS = """
-    Screen { background: #0a0a0a; color: #eeeeee; align: center middle; }
-    #ready { width: 78; height: auto; padding: 2 4; background: #141414; }
+    Screen { background: $background; color: $foreground; align: center middle; }
+    #ready { width: 78; height: auto; padding: 2 4; background: $surface; }
     Static { height: auto; margin-bottom: 1; }
-    #heading { color: #fab283; text-style: bold; }
-    #done { border: none; background: #fab283; color: #0a0a0a; }
+    #heading { color: $primary; text-style: bold; }
+    #done { border: none; background: $primary; color: $background; }
     """
     BINDINGS = [Binding("q,escape", "quit", "Close")]
 
     def __init__(self, project: Project, offer: Offer):
         super().__init__()
         self.project, self.offer = project, offer
+
+    def on_mount(self):
+        for theme in THEMES:
+            self.register_theme(theme)
+        self.theme = "cloudrig"
 
     def compose(self):
         p, row = self.project, self.offer

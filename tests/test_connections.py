@@ -67,7 +67,7 @@ def test_generated_config_uses_public_key_and_restricted_signer(grant, isolated_
 def test_editor_uses_native_ssh_without_key_content(grant, monkeypatch):
     calls = []
     monkeypatch.setattr("cloudrig.connections.run", calls.append)
-    open_code(grant, None, "/workspace/a b;$(evil)")
+    open_code(grant, "/workspace/a b;$(evil)")
     assert calls == [["code", "--remote", "ssh-remote+crig-vastai-demo-01", "/workspace/a b;$(evil)"]]
 
 
@@ -75,7 +75,7 @@ def test_wrong_grant_path_or_proxy_only_connection_is_rejected(grant):
     with pytest.raises(CrigError):
         install_alias(replace(grant, public_key="/tmp/untrusted.pub"))
     with pytest.raises(CrigError):
-        sync_command(replace(grant, direct=False), None, "./", "/workspace", True)
+        sync_command(replace(grant, direct=False), "./", "/workspace", True)
 
 
 def test_real_rsync_copy_works_with_ssh_transport_and_secret_exclusions(grant, monkeypatch, tmp_path):
@@ -106,12 +106,12 @@ def test_real_rsync_copy_works_with_ssh_transport_and_secret_exclusions(grant, m
     )
     transport.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
-    upload = sync_command(grant, None, str(source) + "/", str(remote) + "/", True)
+    upload = sync_command(grant, str(source) + "/", str(remote) + "/", True)
     subprocess.run(upload, capture_output=True, check=True, cwd=tmp_path)
     assert (remote / "hello.txt").read_text() == "round trip"
     assert not (remote / ".env").exists() and not (remote / ".ssh").exists()
     assert not (remote / "unsafe-link").is_symlink()
     assert not (tmp_path / "SHOULD_NOT_EXIST").exists()
-    download = sync_command(grant, None, str(destination) + "/", str(remote) + "/", False)
+    download = sync_command(grant, str(destination) + "/", str(remote) + "/", False)
     subprocess.run(download, capture_output=True, check=True, cwd=tmp_path)
     assert (destination / "hello.txt").read_text() == "round trip"

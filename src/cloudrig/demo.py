@@ -1,14 +1,11 @@
+from cloudrig.broker import BILLING_URLS, DEFAULT_IMAGES
 from cloudrig.models import Instance, Offer, Rental
 
 
 class Demo:
     name = "vastai"
-    default_image = "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime"
-    billing_url = "https://cloud.vast.ai/billing/"
-    key_url = "https://cloud.vast.ai/manage-keys/"
-
-    def validate(self):
-        pass
+    default_image = DEFAULT_IMAGES[name]
+    billing_url = BILLING_URLS[name]
 
     def offers(self, query: str, disk: int = 40, count: int = 1) -> list[Offer]:
         rows = [
@@ -149,9 +146,6 @@ class Demo:
 
     def rent(self, rental: Rental) -> str:
         return "demo-rental"
-
-    def register_key(self, public_key: str):
-        pass
 
     def stop(self, identifier: str):
         pass

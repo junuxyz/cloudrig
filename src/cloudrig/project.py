@@ -4,11 +4,16 @@ import hashlib
 import json
 import re
 import tomllib
-from dataclasses import asdict, dataclass, replace
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
+
+from filelock import FileLock, Timeout
 
 from cloudrig import state
 from cloudrig.models import CrigError, Offer, number, safe_text
+from cloudrig.security import check_transfer_path, private_directory, regular_file
 
 
 @dataclass(frozen=True)
@@ -49,29 +54,24 @@ class Project:
         return {**asdict(self), "root": str(self.root), "remote": self.remote, "setup": self.setup}
 
 
-FIELDS = {"provider", "gpu", "vram", "count", "disk", "max_hourly", "hours", "region", "image"}
+SETTINGS = ("provider", "gpu", "vram", "count", "disk", "max_hourly", "hours", "region", "image")
 
 
-def load_project(path: str, **overrides) -> Project:
+def load_project(path: str, *, default_provider: str = "vastai", **overrides) -> Project:
     root = Path(path).expanduser().resolve()
     if not root.is_dir():
         raise CrigError("Choose an existing project directory.")
-    if root in {Path.home().resolve(), Path("/")}:
-        raise CrigError("Choose a project directory, not your home or filesystem root.")
-    protected = [
-        Path.home().resolve() / name for name in (".ssh", ".aws", ".azure", ".kube", ".gnupg", ".config")
-    ]
-    if any(root == path or path in root.parents for path in protected):
-        raise CrigError("Choose a project directory outside your credential folders.")
+    check_transfer_path(root)
     manifest = root / "crig.toml"
-    values = {}
+    values = {"provider": default_provider}
     if manifest.exists():
         try:
-            values = tomllib.loads(manifest.read_text()).get("workspace", {})
+            configured = tomllib.loads(manifest.read_text()).get("workspace", {})
         except (OSError, ValueError) as error:
             raise CrigError("Cannot read crig.toml. Check its TOML syntax.") from error
-        if not isinstance(values, dict) or values.keys() - FIELDS:
+        if not isinstance(configured, dict) or configured.keys() - set(SETTINGS):
             raise CrigError("Unknown workspace settings in crig.toml. See crig init --help.")
+        values.update(configured)
     values.update({key: value for key, value in overrides.items() if value is not None})
     name = re.sub(r"[^a-z0-9_-]+", "-", root.name.lower()).strip("-_")[:40] or "project"
     project = Project(root, name, **values)
@@ -109,18 +109,50 @@ def candidates(project: Project, offers: list[Offer]) -> list[Offer]:
     return sorted(rows, key=lambda row: (row.total(project.disk), -(row.reliability or 0), row.id))
 
 
-def receipt(project: Project) -> dict | None:
-    return state.load().get("projects", {}).get(project.key)
+class Phase(StrEnum):
+    SUBMITTING = "submitting"
+    PREPARING = "preparing"
+    UPLOADED = "uploaded"
+    READY = "ready"
 
 
-def save_receipt(project: Project, **changes) -> dict:
+@dataclass(frozen=True)
+class Binding:
+    phase: Phase
+    id: str | None = None
+    offer: str | None = None
+    python: str = "python"
+    setup_complete: bool = False
+
+    @property
+    def needs_upload(self) -> bool:
+        return self.phase == Phase.PREPARING
+
+
+def receipt(project: Project) -> Binding | None:
+    saved = state.load().get("projects", {}).get(project.key)
+    if saved is None:
+        return None
+    try:
+        return Binding(
+            phase=Phase(saved["phase"]),
+            id=saved.get("id"),
+            offer=saved.get("offer"),
+            python=saved.get("python", "python"),
+            setup_complete=saved.get("setup_complete", False),
+        )
+    except (TypeError, KeyError, ValueError) as error:
+        raise CrigError(
+            "Invalid project binding. Inspect crig --rented before repairing local state."
+        ) from error
+
+
+def save_receipt(project: Project, binding: Binding) -> Binding:
     with state.state_lock():
         data = state.load()
-        projects = data.setdefault("projects", {})
-        item = projects.setdefault(project.key, {})
-        item.update(root=str(project.root), provider=project.provider, remote=project.remote, **changes)
+        data.setdefault("projects", {})[project.key] = asdict(binding)
         state.atomic_write(state.config_dir() / "config.json", json.dumps(data, indent=2) + "\n")
-        return dict(item)
+    return binding
 
 
 def forget_receipt(project: Project) -> None:
@@ -130,5 +162,14 @@ def forget_receipt(project: Project) -> None:
         state.atomic_write(state.config_dir() / "config.json", json.dumps(data, indent=2) + "\n")
 
 
-def with_default_image(project: Project, image: str) -> Project:
-    return replace(project, image=project.image or image)
+@contextmanager
+def project_lock(project: Project):
+    root = state.config_dir()
+    private_directory(root)
+    path = root / f"project-{project.key}.lock"
+    regular_file(path)
+    try:
+        with FileLock(path, timeout=0, mode=0o600):
+            yield
+    except Timeout as error:
+        raise CrigError("Another command is using this project. Wait for it to finish.") from error

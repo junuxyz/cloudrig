@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cloudrig.models import CrigError, Instance, Offer
+from cloudrig.models import CrigError, Instance, Offer, provider_name
 from cloudrig.security import child_environment
 
 PUBLIC_ROOT = Path("/var/run/cloudrig")
@@ -18,6 +18,15 @@ HELPER = Path(
     if sys.platform == "darwin"
     else "/usr/local/libexec/cloudrig-admin"
 )
+
+DEFAULT_IMAGES = {
+    "vastai": "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime",
+    "runpod": "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404",
+}
+BILLING_URLS = {
+    "vastai": "https://cloud.vast.ai/billing/",
+    "runpod": "https://console.runpod.io/user/billing",
+}
 
 
 def trusted_root_path(path: Path) -> None:
@@ -80,15 +89,10 @@ def admin(operation: str, *arguments: str):
 
 class BrokerProvider:
     def __init__(self, name: str):
+        provider_name(name)
         self.name = name
-        self.default_image = (
-            "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime"
-            if name == "vastai"
-            else "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
-        )
-        self.billing_url = (
-            "https://cloud.vast.ai/billing/" if name == "vastai" else "https://console.runpod.io/user/billing"
-        )
+        self.default_image = DEFAULT_IMAGES[name]
+        self.billing_url = BILLING_URLS[name]
 
     def offers(self, query: str, disk: int = 40, count: int = 1) -> list[Offer]:
         return [Offer(**row) for row in rpc("offers", self.name, query=query, disk=disk, count=count)]

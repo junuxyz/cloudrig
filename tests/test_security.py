@@ -76,7 +76,7 @@ def test_host_address_cannot_inject_ssh_config(host):
 def test_transfer_refuses_host_credential_paths(local):
     for upload in [True, False]:
         with pytest.raises(CrigError, match="credential"):
-            sync_command(Demo().instances()[0], None, local, "/workspace/", upload)
+            sync_command(Demo().instances()[0], local, "/workspace/", upload)
 
 
 def test_outdated_rsync_is_refused(monkeypatch):

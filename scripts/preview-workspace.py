@@ -2,10 +2,11 @@
 
 import asyncio
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from cloudrig.demo import Demo
-from cloudrig.project import candidates, load_project, with_default_image
+from cloudrig.project import candidates, load_project
 from cloudrig.workspace_tui import DemoReadyApp, WorkspaceApp
 
 
@@ -17,7 +18,7 @@ def capture(app, path, title):
 async def main():
     os.environ.pop("NO_COLOR", None)
     root = Path(__file__).resolve().parents[1]
-    project = with_default_image(load_project(str(root), vram=32), Demo.default_image)
+    project = replace(load_project(str(root), vram=32), image=Demo.default_image)
     offers = candidates(project, Demo().offers(""))
     for width, height, filename in [
         (120, 36, "project-workspace.svg"),
