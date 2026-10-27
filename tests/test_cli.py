@@ -1,11 +1,14 @@
 import json
 import subprocess
 import sys
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from cloudrig import state
-from cloudrig.cli import dispatch, parser
+from cloudrig.cli import action, dispatch, parser
+from cloudrig.demo import Demo
 from cloudrig.models import CrigError
 
 
@@ -56,3 +59,25 @@ def test_corrupt_configuration_reports_an_error():
     path.write_text("invalid json")
     with pytest.raises(CrigError):
         state.load()
+
+
+@pytest.mark.parametrize("connection", ["external", "preparing", "ready"])
+def test_connect_handles_authorization_and_pending_setup_inline(connection, monkeypatch):
+    calls = []
+    item = replace(
+        Demo().instances()[0],
+        approved=connection != "external",
+        agent_socket="/protected/agent.sock" if connection == "ready" else None,
+    )
+    api = SimpleNamespace(
+        name="vastai",
+        instance=lambda _: item,
+        approve=lambda identifier: calls.append(("approve", identifier)),
+    )
+    monkeypatch.setattr("cloudrig.cli.wait_ready", lambda *a, **k: calls.append("wait") or item)
+    monkeypatch.setattr("cloudrig.cli.open_code", lambda *a: calls.append("code"))
+    action(api, item, "code", [], args())
+    expected = [("approve", item.id)] if connection == "external" else []
+    if connection != "ready":
+        expected.append("wait")
+    assert calls == [*expected, "code"]

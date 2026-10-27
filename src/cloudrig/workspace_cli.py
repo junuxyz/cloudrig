@@ -123,9 +123,7 @@ def select_target(project: Project, api, args: argparse.Namespace) -> Rental | B
             raise CrigError("This project is already bound. No allocation was changed.")
         item = api.instance(instance_id(args.attach))
         if not item.approved:
-            raise CrigError(
-                f"Authorize the instance first: crig --provider {project.provider} {item.id} approve"
-            )
+            api.approve(item.id)
         console.print(Text(f"Bind {project.name} to {item.name} ({item.id}), {item.gpu}, {item.region}."))
         prompt_confirm("Bind this instance and upload the project? Matching remote files can be overwritten.")
         return save_receipt(project, Binding(Phase.PREPARING, id=item.id))

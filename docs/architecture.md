@@ -80,6 +80,13 @@ There is no provider plugin framework. Two concrete providers share the existing
 The ordinary API permits search, reads, and stopping approved instances. Spending and credential
 changes require the installed privileged command. See [security.md](security.md) for the threat model.
 
+Rental approval includes SSH access to the allocated instance. The helper journals the ID with
+`connecting` set, then returns it immediately. Instance reads finish key registration and host-key
+pinning for that recorded connection when SSH becomes ready. An approved start sets the same flag.
+This work survives CLI/helper restarts and requires no second approval. Reads cannot create an SSH
+grant for an unrelated instance or replace a completed host pin. The signer stays unavailable until
+connection setup finishes. Explicit `approve` remains available for importing or reauthorizing an instance.
+
 Vast marketplace results group equivalent offers and may show a different representative ID on each
 search. Rental checks query the selected `ask_contract_id` before approval and again before allocation,
 with the requested disk and GPU count. They do not look for that ID in another grouped market search.

@@ -56,10 +56,12 @@ def ssh_string(value: str) -> str:
 
 
 def verify_grant(instance: Instance) -> tuple[Path, Path, Path]:
-    if not instance.approved or not all((instance.public_key, instance.agent_socket, instance.known_hosts)):
+    if not instance.approved:
         raise CrigError(
             f"Authorize this GPU first: crig {instance.id} approve. This needs fresh sudo authentication."
         )
+    if not all((instance.public_key, instance.agent_socket, instance.known_hosts)):
+        raise CrigError(f"SSH setup is still in progress. Reconnect with crig {instance.id} ssh.")
     paths = [Path(value) for value in (instance.public_key, instance.agent_socket, instance.known_hosts)]
     root = broker.PUBLIC_ROOT.resolve()
     for path in paths:

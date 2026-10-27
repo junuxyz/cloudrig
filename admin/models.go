@@ -27,6 +27,7 @@ type Record struct {
 	KnownHosts string `json:"known_hosts"`
 	HostKey    string `json:"host_key"`
 	Revoked    bool   `json:"revoked"`
+	Connecting bool   `json:"connecting,omitempty"`
 }
 
 type DB struct {

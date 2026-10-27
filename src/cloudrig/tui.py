@@ -394,7 +394,7 @@ class Actions(Dialog):
 
     def groups(self) -> list[tuple[str, list[tuple[str, str, str]]]]:
         row = self.instance
-        authorize = [("Authorize connection", "approve", "sudo")]
+        authorize = [("Reauthorize connection…", "approve", "sudo")]
         manage = []
         if row.status != "running":
             manage.append(("Start instance", "start", "sudo"))
@@ -403,13 +403,14 @@ class Actions(Dialog):
         if row.approved:
             manage += authorize
         manage.append(("Delete instance…", "destroy", "sudo"))
+        authorization = "" if row.approved else "sudo"
         connect = [
-            ("Connect with SSH", "ssh", ""),
-            ("Open in VS Code", "code", ""),
-            ("Run an agent", "agent", ""),
+            ("Connect with SSH", "ssh", authorization),
+            ("Open in VS Code", "code", authorization),
+            ("Run an agent", "agent", authorization),
         ]
         return [
-            ("Connect", connect if row.approved else authorize + connect),
+            ("Connect", connect),
             ("Files", [("Send files to cloud", "push", ""), ("Get files locally", "pull", "")]),
             ("Manage", manage),
         ]

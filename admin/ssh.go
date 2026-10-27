@@ -28,9 +28,12 @@ func (s *Store) approved(p, id string) (Record, error) {
 }
 
 func (s *Store) publicGrant(i Instance) Instance {
-	if rec, e := s.approved(i.Provider, i.ID); e == nil && validEndpoint(rec) {
-		dir := publicDir(s.Run, i.Provider, i.ID)
+	if rec, e := s.approved(i.Provider, i.ID); e == nil {
 		i.Approved = true
+		if rec.Connecting || !validEndpoint(rec) {
+			return i
+		}
+		dir := publicDir(s.Run, i.Provider, i.ID)
 		i.PublicKey = filepath.Join(dir, "identity.pub")
 		i.AgentSocket = filepath.Join(dir, "agent.sock")
 		i.KnownHosts = filepath.Join(dir, "known_hosts")
@@ -39,6 +42,43 @@ func (s *Store) publicGrant(i Instance) Instance {
 		i.User = rec.User
 	}
 	return i
+}
+
+func (s *Store) finishConnection(i Instance) error {
+	if i.Status != "running" || !i.Direct || i.Host == "" || i.Port == 0 {
+		return nil
+	}
+	unlock, e := s.lock()
+	if e != nil {
+		return e
+	}
+	defer unlock()
+	db, e := s.readDB()
+	if e != nil {
+		return e
+	}
+	key := keyOf(i.Provider, i.ID)
+	rec, exists := db.Records[key]
+	if !exists || rec.Revoked || !rec.Connecting || rec.Key == "" {
+		return nil
+	}
+	rec.Host, rec.Port, rec.User = i.Host, i.Port, i.User
+	// SSH may still be booting. Keep the authorized connection pending until a later read.
+	if e = s.pin(&rec); e != nil {
+		return nil
+	}
+	if i.Provider == "vastai" {
+		pub, e := os.ReadFile(rec.Key + ".pub")
+		if e != nil {
+			return e
+		}
+		if _, e = s.call(i.Provider, "POST", "/api/v0/instances/"+i.ID+"/ssh/", map[string]string{"ssh_key": strings.TrimSpace(string(pub))}); e != nil {
+			return fmt.Errorf("instance %s is rented; retry its connection to finish SSH setup: %w", i.ID, e)
+		}
+	}
+	rec.Connecting = false
+	db.Records[key] = rec
+	return writeJSON(filepath.Join(s.Root, "resources.json"), db)
 }
 
 // The agent proxy permits only read/sign/session-binding requests. OpenSSH enforces destination
@@ -92,7 +132,7 @@ func (s *Store) proxy(c *net.UnixConn, rec Record, upstream string) {
 			return
 		}
 		current, approvalError := s.approved(rec.Provider, rec.ID)
-		if approvalError != nil || current.Key != rec.Key || current.Host != rec.Host || current.Port != rec.Port || current.User != rec.User || current.HostKey != rec.HostKey {
+		if approvalError != nil || current.Connecting || current.Key != rec.Key || current.Host != rec.Host || current.Port != rec.Port || current.User != rec.User || current.HostKey != rec.HostKey {
 			return
 		}
 		if !permittedFrame(b) {

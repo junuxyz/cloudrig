@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -171,8 +172,8 @@ func TestKnownAllocationCannotBeDuplicatedWhenProviderListingIsStale(t *testing.
 	f := newVastProvider(t, s)
 	approveInTest(s)
 	id, e := s.rent(rental("training"))
-	if id != "101" || e == nil {
-		t.Fatal("expected allocated resource with failed SSH setup", id, e)
+	if id != "101" || e != nil {
+		t.Fatal("allocation should succeed while SSH is pending", id, e)
 	}
 	recovered := newStore(s.Root, s.Run, s.Owner)
 	recovered.Base["vastai"] = f.server.URL
@@ -226,8 +227,8 @@ func TestConcurrentBrokersCannotRentSameNameTwice(t *testing.T) {
 			if r.id != "" {
 				allocated++
 			}
-			if r.err == nil {
-				t.Error("SSH setup fault was lost")
+			if (r.id != "") != (r.err == nil) {
+				t.Error("only the allocated rental should succeed", r)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("concurrent broker deadlocked")
@@ -243,7 +244,7 @@ func TestDeleteRevokesBeforeNetworkAndOnlyConfirmedDeletionReleasesName(t *testi
 	s := testStore(t)
 	f := newVastProvider(t, s)
 	approveInTest(s)
-	if id, e := s.rent(rental("training")); id != "101" || e == nil {
+	if id, e := s.rent(rental("training")); id != "101" || e != nil {
 		t.Fatal(id, e)
 	}
 	f.listed.Store(true)
@@ -265,7 +266,7 @@ func TestDeleteRevokesBeforeNetworkAndOnlyConfirmedDeletionReleasesName(t *testi
 		t.Fatal(e)
 	}
 	f.listed.Store(false)
-	if id, e := s.rent(rental("training")); id != "102" || e == nil {
+	if id, e := s.rent(rental("training")); id != "102" || e != nil {
 		t.Fatal("confirmed deletion did not permit name reuse", id, e)
 	}
 	if f.deletions.Load() != 2 || f.allocations.Load() != 2 {
@@ -344,10 +345,12 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 			args := rental("training")
 			expectedID := "101"
 			var quote string
-			s.Confirm = func(message string) error { quote = message; return nil }
+			var approvals int
+			var port syncatomic.Int64
+			var vast *vastProvider
+			s.Confirm = func(message string) error { approvals++; quote = message; return nil }
 			if provider == "vastai" {
-				f := newVastProvider(t, s)
-				f.endpointPort.Store(int64(endpoint.port))
+				vast = newVastProvider(t, s)
 			} else {
 				args = RentArgs{"runpod", "gpu5090|SECURE|US-TX", "5090", "training", "pytorch/pytorch:tag", 40, 2}
 				expectedID = "pod1"
@@ -375,7 +378,7 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 						}
 						write(map[string]string{"id": "pod1"})
 					case r.Method == "GET" && r.URL.Path == "/v2/pods/pod1":
-						write(map[string]any{"id": "pod1", "name": "training", "gpu": map[string]any{"id": "gpu5090", "count": 2}, "cost": 0.8, "ssh": map[string]any{"direct": map[string]any{"host": "127.0.0.1", "port": endpoint.port, "username": "worker"}}})
+						write(map[string]any{"id": "pod1", "name": "training", "status": "running", "gpu": map[string]any{"id": "gpu5090", "count": 2}, "cost": 0.8, "ssh": map[string]any{"direct": map[string]any{"host": "127.0.0.1", "port": port.Load(), "username": "worker"}}})
 					default:
 						t.Error("unexpected RunPod request", r.Method, r.URL.Path)
 						w.WriteHeader(500)
@@ -395,9 +398,27 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 			if !strings.Contains(quote, expectedQuote) || !strings.Contains(quote, "x2") {
 				t.Fatal("wrong provider-derived rental quote", quote)
 			}
-			rec, e := s.approved(provider, id)
-			if e != nil {
-				t.Fatal("successful rental has no persisted grant", e)
+			if vast != nil {
+				vast.listed.Store(true)
+			}
+			pending, e := s.public(Request{Op: "instance", Provider: provider, ID: id})
+			if e != nil || !pending.(Instance).Approved || pending.(Instance).AgentSocket != "" {
+				t.Fatal("booting rental should retain its approval without publishing a signer", pending, e)
+			}
+			if vast != nil {
+				vast.endpointPort.Store(int64(endpoint.port))
+			} else {
+				port.Store(int64(endpoint.port))
+			}
+			recovered := newStore(s.Root, s.Run, s.Owner)
+			recovered.Base = s.Base
+			recovered.Confirm = func(string) error { t.Fatal("connection requested another approval"); return nil }
+			if _, e = recovered.public(Request{Op: "instance", Provider: provider, ID: id}); e != nil {
+				t.Fatal("delayed connection did not recover after helper restart", e)
+			}
+			rec, e := recovered.approved(provider, id)
+			if e != nil || rec.Connecting || approvals != 1 {
+				t.Fatal("successful rental lost its single approval", rec, approvals, e)
 			}
 			stop, e := s.startSigner(rec)
 			if e != nil {
@@ -423,6 +444,53 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 			out, e := sshAuthentication(grant.PublicKey, grant.AgentSocket, grant.KnownHosts, provider+"-"+id, grant.User, grant.Port)
 			if e != nil || out != "authenticated\n" {
 				t.Fatal("rental grant cannot authenticate", out, e)
+			}
+		})
+	}
+}
+
+func TestInstanceReadCannotAuthorizeOrRepinAnUnrequestedConnection(t *testing.T) {
+	for _, state := range []string{"unknown", "revoked", "completed"} {
+		t.Run(state, func(t *testing.T) {
+			s, rec, _, other := signerRecord(t)
+			rec.Revoked = state == "revoked"
+			rec.Connecting = state == "revoked"
+			db := DB{Records: map[string]Record{keyOf(rec.Provider, rec.ID): rec}}
+			if state == "unknown" {
+				delete(db.Records, keyOf(rec.Provider, rec.ID))
+			}
+			journal := filepath.Join(s.Root, "resources.json")
+			if e := writeJSON(journal, db); e != nil {
+				t.Fatal(e)
+			}
+			before, _ := os.ReadFile(journal)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "GET" || r.URL.Path != "/api/v1/instances/" {
+					t.Error("read attempted to register an unrequested key", r.Method, r.URL.Path)
+					w.WriteHeader(500)
+					return
+				}
+				json.NewEncoder(w).Encode(map[string]any{"instances": []any{map[string]any{
+					"id": rec.ID, "label": "fixture", "actual_status": "running", "ssh_host": "127.0.0.1", "ssh_port": other.port,
+				}}})
+			}))
+			t.Cleanup(server.Close)
+			s.Base["vastai"] = server.URL
+			result, e := s.public(Request{Op: "instance", Provider: rec.Provider, ID: rec.ID})
+			if e != nil {
+				t.Fatal(e)
+			}
+			grant := result.(Instance)
+			if state == "completed" {
+				if !grant.Approved || grant.Port != rec.Port {
+					t.Fatal("read replaced the approved endpoint", grant)
+				}
+			} else if grant.Approved {
+				t.Fatal("read granted unapproved SSH access", grant)
+			}
+			after, _ := os.ReadFile(journal)
+			if !bytes.Equal(before, after) {
+				t.Fatal("read changed a record without connection authority")
 			}
 		})
 	}

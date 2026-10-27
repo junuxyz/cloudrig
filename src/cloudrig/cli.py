@@ -214,6 +214,11 @@ def action(api, item: Instance, name: str, paths: list[str], args):
     fresh = api.instance(item.id)
     if fresh.status != "running":
         raise CrigError(f"Instance is {fresh.status}. Start it with crig {item.id} start.")
+    if not fresh.approved:
+        api.approve(item.id)
+    if not fresh.approved or not fresh.agent_socket:
+        with console.status("Preparing the SSH connection…"):
+            fresh = wait_ready(api, item.id, timeout=args.timeout)
     state.remember_instance(api.name, item.id)
     if name == "code":
         remote = paths[0] if paths else "/workspace"
@@ -357,7 +362,6 @@ def dispatch(args):
                 console.print(
                     "Storage extra where marked '+'. Billing starts on rental; data transfer may cost extra."
                 )
-                prompt_confirm("Rent this GPU?", args.yes)
                 rent(api, rental, args)
             else:
                 print_rows(offers, args)

@@ -32,6 +32,9 @@ func (s *Store) public(r Request) (any, error) {
 		if e != nil {
 			return nil, e
 		}
+		if e = s.finishConnection(i); e != nil {
+			return nil, e
+		}
 		return s.publicGrant(i), nil
 	case "stop":
 		if _, e := s.approved(r.Provider, r.ID); e != nil {
@@ -125,7 +128,7 @@ func (s *Store) daemon(ctx context.Context) error {
 			}
 		}
 		for key, rec := range db.Records {
-			if rec.Revoked {
+			if rec.Revoked || rec.Connecting {
 				continue
 			}
 			if _, exists := running[key]; !exists {

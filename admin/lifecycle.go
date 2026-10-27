@@ -110,7 +110,7 @@ func (s *Store) rent(a RentArgs) (string, error) {
 		"Disk: %d GB\n"+
 		"Image: %s\n"+
 		"Current quote: $%.6f/hour%s\n"+
-		"No automatic shutdown. Billing begins on allocation.",
+		"SSH access to this instance is included in this approval.\nNo automatic shutdown. Billing begins on allocation.",
 		a.Name, a.Provider, o.GPU, o.Count, o.VRAM, o.Region, a.Disk, a.Image, price, extra)
 	if e = s.Confirm(quote); e != nil {
 		return "", e
@@ -201,32 +201,14 @@ func (s *Store) rent(a RentArgs) (string, error) {
 	if !idPattern.MatchString(id) {
 		return "", errors.New("allocation outcome unknown; inspect rented instances")
 	}
-	rec := Record{Provider: a.Provider, ID: id, Name: a.Name, Key: key}
+	rec := Record{Provider: a.Provider, ID: id, Name: a.Name, Key: key, Connecting: true}
 	db.Records[keyOf(a.Provider, id)] = rec
 	db.Pending[pending] = false
 	if e = writeJSON(filepath.Join(s.Root, "resources.json"), db); e != nil {
 		return id, e
 	}
-	if a.Provider == "vastai" {
-		if _, e = s.call("vastai", "POST", "/api/v0/instances/"+id+"/ssh/", map[string]string{"ssh_key": pub}); e != nil {
-			return id, e
-		}
-	}
-	fmt.Fprintf(os.Stderr, "Allocated %s. Waiting for SSH endpoint; the instance is billable.\n", id)
-	for n := 0; n < 100; n++ {
-		i, err := s.instance(a.Provider, id)
-		if err == nil && i.Host != "" && i.Port > 0 && i.Direct {
-			rec.Host = i.Host
-			rec.Port = i.Port
-			rec.User = i.User
-			if e = s.pin(&rec); e == nil {
-				db.Records[keyOf(a.Provider, id)] = rec
-				return id, writeJSON(filepath.Join(s.Root, "resources.json"), db)
-			}
-		}
-		time.Sleep(3 * time.Second)
-	}
-	return id, errors.New("rented but SSH was not ready; inspect account and use sudo approve later")
+	fmt.Fprintf(os.Stderr, "Allocated %s. SSH setup will continue automatically; the instance is billable.\n", id)
+	return id, nil
 }
 
 func (s *Store) mutate(provider, id, action string) error {
@@ -292,20 +274,9 @@ func (s *Store) mutate(provider, id, action string) error {
 	}
 	if action == "start" {
 		if rec, ok := db.Records[keyOf(provider, id)]; ok && !rec.Revoked {
-			for n := 0; n < 100; n++ {
-				current, err := s.instance(provider, id)
-				if err == nil && current.Host != "" && current.Port > 0 && current.Direct {
-					rec.Host = current.Host
-					rec.Port = current.Port
-					rec.User = current.User
-					if err = s.pin(&rec); err == nil {
-						db.Records[keyOf(provider, id)] = rec
-						return writeJSON(filepath.Join(s.Root, "resources.json"), db)
-					}
-				}
-				time.Sleep(3 * time.Second)
-			}
-			return errors.New("start accepted but SSH was not ready; approve it later")
+			rec.Connecting = true
+			db.Records[keyOf(provider, id)] = rec
+			return writeJSON(filepath.Join(s.Root, "resources.json"), db)
 		}
 	}
 	return nil

@@ -36,6 +36,13 @@ constraints. The proxy accepts identity reads, sign requests, and `session-bind@
 OpenSSH performs and enforces the cryptography. Mutating/importing keys and other agent extensions
 are denied. Unbound arbitrary signatures are refused by OpenSSH, not a CLI convention.
 
+A rental approval also authorizes connection setup for the allocated ID. An approved start authorizes
+reconnecting that recorded instance. The protected journal marks this work `connecting`; instance reads
+may finish its public-key registration and first host pin without another sudo operation. This flag is
+written only by the privileged rental/start path. Unknown, revoked, and completed records cannot gain
+or change SSH authority through a read. No signer is published while setup is pending. SSH setup can
+resume after a helper restart; it never submits another allocation.
+
 A user with a connection grant may authenticate to that approved server identity. That is intended
 work authority, not private-key ownership. Host identities are SSH host keys, not an absolute
 network-address attestation. A compromised remote machine can modify its own data and persist
