@@ -261,6 +261,14 @@ func mockVastQuotes(t *testing.T, s *Store, change string) *int {
 			io.WriteString(w, `{"gpu_names":["RTX 5090"]}`)
 		case "/api/v0/bundles/":
 			*calls++
+			var query map[string]any
+			if e := json.NewDecoder(r.Body).Decode(&query); e != nil {
+				t.Error(e)
+			}
+			id := 1
+			if *calls > 1 && object(query["ask_contract_id"])["eq"] != float64(1) {
+				id = 2
+			}
 			price := 0.8
 			region := "US"
 			if change == "price" && *calls > 1 {
@@ -269,7 +277,7 @@ func mockVastQuotes(t *testing.T, s *Store, change string) *int {
 			if change == "region" && *calls > 1 {
 				region = "KR"
 			}
-			fmt.Fprintf(w, `{"offers":[{"id":1,"gpu_name":"RTX 5090","num_gpus":2,"gpu_ram":32768,"dph_base":%f,"dph_total":%f,"storage_cost":0.72,"disk_space":100,"geolocation":%q}]}`, price, price+0.04, region)
+			fmt.Fprintf(w, `{"offers":[{"id":%d,"gpu_name":"RTX 5090","num_gpus":2,"gpu_ram":32768,"dph_base":%f,"dph_total":%f,"storage_cost":0.72,"disk_space":100,"geolocation":%q}]}`, id, price, price+0.04, region)
 		default:
 			t.Errorf("unexpected provider operation %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(500)
@@ -279,6 +287,22 @@ func mockVastQuotes(t *testing.T, s *Store, change string) *int {
 	s.Base["vastai"] = server.URL
 	return calls
 }
+
+func TestRentalRevalidatesSelectedVastAskWhenBundleRepresentativeChanges(t *testing.T) {
+	s := testStore(t)
+	calls := mockVastQuotes(t, s, "")
+	offers, e := s.offers(Request{Provider: "vastai", Query: "5090", Disk: 40, Count: 1})
+	if e != nil || len(offers) != 1 {
+		t.Fatal("market search failed", offers, e)
+	}
+	var quote string
+	s.Confirm = func(message string) error { quote = message; return errors.New("cancelled") }
+	_, e = s.rent(RentArgs{"vastai", offers[0].ID, offers[0].GPU, "training", "pytorch/pytorch:tag", 40, offers[0].Count})
+	if e == nil || e.Error() != "cancelled" || !strings.Contains(quote, "$0.840000/hour") || *calls != 2 {
+		t.Fatal("selected ask lost during grouped market refresh", quote, *calls, e)
+	}
+}
+
 func TestPrivilegedRentalQuotesActualGPUCountAndDiskBeforeApproval(t *testing.T) {
 	s := testStore(t)
 	mockVastQuotes(t, s, "")

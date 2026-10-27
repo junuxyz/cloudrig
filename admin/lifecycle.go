@@ -77,7 +77,8 @@ func (s *Store) rent(a RentArgs) (string, error) {
 	if !validProvider(a.Provider) || !namePattern.MatchString(a.Name) || !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./:@-]{0,511}$`).MatchString(a.Image) {
 		return "", errors.New("invalid rental configuration")
 	}
-	offers, e := s.offers(Request{Op: "offers", Provider: a.Provider, Query: a.Query, Disk: a.Disk, Count: a.Count})
+	search := Request{Op: "offers", Provider: a.Provider, ID: a.ID, Query: a.Query, Disk: a.Disk, Count: a.Count}
+	offers, e := s.offers(search)
 	if e != nil {
 		return "", e
 	}
@@ -90,7 +91,7 @@ func (s *Store) rent(a RentArgs) (string, error) {
 		}
 	}
 	if chosen == nil {
-		return "", errors.New("offer is no longer available")
+		return "", fmt.Errorf("offer %s is unavailable for the selected GPU count and disk; refresh the market. No rental was submitted", a.ID)
 	}
 	o := *chosen
 	price := o.Hourly
@@ -119,7 +120,7 @@ func (s *Store) rent(a RentArgs) (string, error) {
 		return "", e
 	}
 	defer unlock()
-	refreshed, refreshError := s.offers(Request{Op: "offers", Provider: a.Provider, Query: a.Query, Disk: a.Disk, Count: a.Count})
+	refreshed, refreshError := s.offers(search)
 	if refreshError != nil {
 		return "", refreshError
 	}

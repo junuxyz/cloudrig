@@ -127,22 +127,7 @@ func (s *Store) offers(r Request) ([]Offer, error) {
 	}
 	out := []Offer{}
 	if r.Provider == "vastai" {
-		v, e := s.call("vastai", "GET", "/api/v0/gpu_names/unique/", nil)
-		if e != nil {
-			return nil, e
-		}
-		names := []string{}
-		for _, v := range array(object(v)["gpu_names"]) {
-			name := text(v)
-			if strings.Contains(strings.ToLower(name), strings.ToLower(r.Query)) {
-				names = append(names, name)
-			}
-		}
-		if len(names) == 0 {
-			return out, nil
-		}
 		q := map[string]any{
-			"gpu_name":          map[string]any{"in": names},
 			"verified":          map[string]any{"eq": true},
 			"rentable":          map[string]any{"eq": true},
 			"rented":            map[string]any{"eq": false},
@@ -150,12 +135,35 @@ func (s *Store) offers(r Request) ([]Offer, error) {
 			"num_gpus":          map[string]any{"gte": r.Count},
 			"disk_space":        map[string]any{"gte": r.Disk},
 			"direct_port_count": map[string]any{"gte": 1},
-			"type":              "ondemand",
+			"type":              "on-demand",
 			"order":             [][]string{{"dph_total", "asc"}},
 			"limit":             10000,
 			"allocated_storage": r.Disk,
 		}
-		v, e = s.call("vastai", "POST", "/api/v0/bundles/", q)
+		if r.ID != "" {
+			id, e := strconv.ParseUint(r.ID, 10, 64)
+			if e != nil || id == 0 {
+				return nil, errors.New("invalid Vast offer ID")
+			}
+			q["ask_contract_id"] = map[string]any{"eq": id}
+		} else {
+			v, e := s.call("vastai", "GET", "/api/v0/gpu_names/unique/", nil)
+			if e != nil {
+				return nil, e
+			}
+			names := []string{}
+			for _, v := range array(object(v)["gpu_names"]) {
+				name := text(v)
+				if strings.Contains(strings.ToLower(name), strings.ToLower(r.Query)) {
+					names = append(names, name)
+				}
+			}
+			if len(names) == 0 {
+				return out, nil
+			}
+			q["gpu_name"] = map[string]any{"in": names}
+		}
+		v, e := s.call("vastai", "POST", "/api/v0/bundles/", q)
 		if e != nil {
 			return nil, e
 		}

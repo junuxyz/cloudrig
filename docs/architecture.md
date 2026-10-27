@@ -80,6 +80,10 @@ There is no provider plugin framework. Two concrete providers share the existing
 The ordinary API permits search, reads, and stopping approved instances. Spending and credential
 changes require the installed privileged command. See [security.md](security.md) for the threat model.
 
+Vast marketplace results group equivalent offers and may show a different representative ID on each
+search. Rental checks query the selected `ask_contract_id` before approval and again before allocation,
+with the requested disk and GPU count. They do not look for that ID in another grouped market search.
+
 Public runtime files live next to the helper on macOS, under
 `/Library/PrivilegedHelperTools/cloudrig`, and under `/var/run/cloudrig` on Linux.
 The installer creates Cloudrig's own directories and waits for launchd to finish unloading the
