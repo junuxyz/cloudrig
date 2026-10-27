@@ -225,6 +225,11 @@ MIN_RSYNC = (3, 5, 0)
 SECRET_EXCLUDES = (
     ".git/",
     ".venv/",
+    "__pycache__/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    "node_modules/",
+    "dist/",
     ".env",
     ".env.*",
     ".ssh/",

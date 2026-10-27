@@ -1,5 +1,9 @@
 # cloudrig
 
+Project-first prototype: run `uv run crig up . --demo --vram 32` to review a GPU and preview
+opening this project remotely. See the [working prototype](docs/project-workspaces.md) and
+[research, alternatives, and recommended next steps](docs/workspace-research.md).
+
 Find a cloud GPU, rent it, and get to work. One command: **`crig`**.
 
 ![GPU search with fictional demo data](docs/market.svg)

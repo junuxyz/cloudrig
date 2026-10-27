@@ -52,6 +52,13 @@ Try without an account:
   crig --demo --gpu 5090
   crig --demo --rented
 
+Project workspace prototype:
+  crig up . --demo --vram 32  Preview this project on a GPU, without an account
+  crig init .                Save project requirements in crig.toml
+  crig plan .                Review matching compute and disk quotes
+  crig up .                  Prepare this project and open VS Code; reconnect later
+  crig down .                Stop this project's compute after confirmation
+
 Run crig doctor to check local tools.
 """,
     )
@@ -431,6 +438,11 @@ def dispatch(args):
 
 def main():
     try:
+        if sys.argv[1:2] and sys.argv[1] in {"init", "plan", "up", "down", "forget"}:
+            from cloudrig.workspace import dispatch as workspace_dispatch
+
+            workspace_dispatch(sys.argv[1:])
+            return
         # Preserve remote command options after '--'; they belong to the remote executable.
         argv = sys.argv[1:]
         remote = []
