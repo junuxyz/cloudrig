@@ -1,11 +1,11 @@
 # CLI experience
 
-`crig` is the global ordinary-user client. It remembers a default provider, shows a searchable GPU
-market and rented-instance list, and uses one restrained terminal interface: neutral grays with a
+`crig` is the global ordinary-user client. It remembers a default provider, shows searchable
+GPU offers and rented instances, and uses one restrained terminal interface: neutral grays with a
 peach accent.
 
 The interface is built from layered surfaces rather than boxes: background, surface (sidebar, status
-bar, dialogs), and panel (inputs, quote). Focus is shown with a left accent bar. Market and Workspaces
+bar, dialogs), and panel (inputs, quote). Focus is shown with a left accent bar. GPU offers and Instances
 are tabs (`1`, `2`). A sidebar inspects the selected row and collapses into a summary strip below
 104 columns. Dialogs are keyboard lists with hotkeys. Delete has no single-key shortcut. `ctrl+p`
 opens a command palette for views, sorting, refresh, and themes (`cloudrig`, `cloudrig-mint`,

@@ -23,7 +23,7 @@ uv run crig --demo --rented
 ```
 
 Use arrows (or `j`/`k`) to choose, `/` to filter, `s` to sort, and Enter to review. `1` and `2` switch
-between the market and your workspaces, and `ctrl+p` opens the command palette, including themes.
+between GPU offers and Instances, and `ctrl+p` opens the command palette, including themes.
 Demo mode never contacts a provider or the privileged service.
 
 ## Install

@@ -70,7 +70,7 @@ class WorkspaceApp(App[Offer | None]):
                 id="note",
             )
             with Horizontal(id="actions"):
-                yield Button("Try this workspace" if self.demo else "Review quote & rent", id="launch")
+                yield Button("Try this workspace" if self.demo else "Rent GPU", id="launch")
                 yield Button("Back", id="cancel")
             yield Static(
                 "DEMO · fictional offers · no rental, upload, or editor launch"

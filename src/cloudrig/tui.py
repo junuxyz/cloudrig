@@ -231,7 +231,7 @@ class Checkout(Dialog):
             with Horizontal(classes="dialog-actions"):
                 yield Static(id="next-step")
                 yield Button("Back", id="cancel")
-                yield Button("Review & rent", variant="primary", id="rent")
+                yield Button("Rent GPU", variant="primary", id="rent")
 
     def on_mount(self):
         colors = palette(self.app)
@@ -458,7 +458,7 @@ class Help(Dialog):
             (
                 ("↑ ↓  j k", "move the selection"),
                 ("enter", "review an offer or open actions"),
-                ("1  2", "market, workspaces"),
+                ("1  2", "GPU offers, Instances"),
                 ("esc", "back, or clear the filter"),
             ),
         ),
@@ -503,7 +503,7 @@ class Tab(Static):
 
 class CloudrigApp(App[Rental | InstanceAction | None]):
     TITLE = "cloudrig"
-    SUB_TITLE = "GPU market"
+    SUB_TITLE = "GPU offers"
     CSS = """
     Screen { background: $background; color: $foreground; }
     #shell { padding: 0 2; }
@@ -602,8 +602,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         Binding("r", "refresh", "Refresh"),
         Binding("enter", "select", "Details", show=True),
         Binding("escape", "table", "Back", show=False),
-        Binding("1", "view('market')", "Market", show=False),
-        Binding("2", "view('workspaces')", "Workspaces", show=False),
+        Binding("1", "view('market')", "GPU offers", show=False),
+        Binding("2", "view('workspaces')", "Instances", show=False),
         Binding("j", "cursor(1)", show=False),
         Binding("k", "cursor(-1)", show=False),
         Binding("question_mark", "help", "Help", key_display="?"),
@@ -642,8 +642,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         with Vertical(id="shell"):
             with Horizontal(id="header"):
                 yield Static(id="brand")
-                yield Tab("Market", "market")
-                yield Tab("Workspaces", "workspaces")
+                yield Tab("GPU offers", "market")
+                yield Tab("Instances", "workspaces")
                 yield Static(id="header-space")
                 yield Static(id="provider")
             with Horizontal(id="searchbar"):
@@ -725,7 +725,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.query_one("#tab-market").set_class(not self.rented, "-active")
         self.query_one("#tab-workspaces").set_class(self.rented, "-active")
         self.query_one("#search", Input).placeholder = (
-            "Filter workspaces by name, GPU, region…" if self.rented else "Filter GPU, region, offer ID…"
+            "Filter instances by name, GPU, region…" if self.rented else "Filter GPU, region, offer ID…"
         )
         self.paint_status()
 
@@ -746,14 +746,14 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         if self.query_one("#search", Input).has_focus:
             hints = [("enter", "apply"), ("esc", "back")]
         elif self.rented:
-            hints = [("↑↓", "select"), ("enter", "actions"), ("/", "filter"), ("1", "market")]
+            hints = [("↑↓", "select"), ("enter", "actions"), ("/", "filter"), ("1", "GPU offers")]
         else:
             hints = [
                 ("↑↓", "select"),
                 ("enter", "review"),
                 ("/", "filter"),
                 ("s", "sort"),
-                ("2", "workspaces"),
+                ("2", "Instances"),
             ]
         hints += [("?", "help"), ("ctrl+p", "commands")]
         if self.size.width < 100 and len(hints) > 4:
@@ -812,7 +812,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             self.updated = time.strftime("%H:%M")
             self.populate()
             if self.announce:
-                noun = "workspace" if self.rented else "offer"
+                noun = "instance" if self.rented else "offer"
                 count = len(self.visible_rows)
                 self.notify(f"{count} {noun}{'s' * (count != 1)} loaded", title="Refreshed", timeout=2)
         except CrigError as error:
@@ -833,7 +833,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         colors = palette(self)
         frame = SPINNER[self.spin % len(SPINNER)]
         self.spin += 1
-        label = "loading workspaces" if self.rented else "fetching live availability"
+        label = "loading instances" if self.rented else "fetching live availability"
         self.query_one("#meta", Static).update(
             Text.assemble((frame, colors["primary"]), (f" {label}…", colors["muted"]))
         )
@@ -965,7 +965,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         if self.loading:
             frame = SPINNER[self.spin % len(SPINNER)]
             text.append(frame, style=colors["primary"])
-            subject = "your workspaces" if self.rented else "live availability"
+            subject = "your instances" if self.rented else "live availability"
             text.append(f" loading {subject} from {self.provider.name}…\n", style=colors["muted"])
         else:
             needle = self.query_one("#search", Input).value
@@ -974,13 +974,13 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             elif needle:
                 message = f"Nothing matches “{needle}”"
             elif self.rented:
-                message = "No workspaces yet"
+                message = "No instances yet"
             else:
                 message = f"No offers for “{self.gpu_query or 'all GPUs'}”"
             text.append(f"{message}\n\n", style=f"bold {colors['fg']}")
             hints = [("esc", "clear filter")] if needle else []
             hints.append(("r", "refresh"))
-            hints.append(("1", "market") if self.rented else ("2", "workspaces"))
+            hints.append(("1", "GPU offers") if self.rented else ("2", "Instances"))
             for index, (key, label) in enumerate(hints):
                 text.append("    " if index else "")
                 text.append(key, style=f"bold {colors['fg']}")
@@ -1014,12 +1014,12 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         if needle:
             text.append(f"Nothing matches “{needle}”\n", style=f"bold {colors['fg']}")
         elif self.rented:
-            text.append("No workspaces yet\n", style=f"bold {colors['fg']}")
+            text.append("No instances yet\n", style=f"bold {colors['fg']}")
         else:
             text.append(f"No offers for “{self.gpu_query or 'all GPUs'}”\n", style=f"bold {colors['fg']}")
         hints = [("esc", "clear the filter")] if needle else []
         hints.append(("r", "refresh from the provider"))
-        hints.append(("1", "search the market") if self.rented else ("2", "see your workspaces"))
+        hints.append(("1", "browse GPU offers") if self.rented else ("2", "see your instances"))
         for key, label in hints:
             text.append(f"\n{key:<5}", style=f"bold {colors['fg']}")
             text.append(label, style=colors["muted"])
@@ -1077,7 +1077,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
 
         prices = sorted(hourly(offer, self.disk) for offer in self.visible_rows)
         if len(prices) > 1:
-            section(text, "Market", width, colors)
+            section(text, "GPU offers", width, colors)
             low, high, bar = prices[0], prices[-1], 22
             spot = round((price - low) / (high - low) * (bar - 1)) if high > low else 0
             text.append(f"\n${low:.2f} ", style=colors["muted"])
@@ -1134,8 +1134,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
     # Commands
 
     def get_system_commands(self, screen: Screen):
-        yield SystemCommand("Market", "Search GPU offers", lambda: self.action_view("market"))
-        yield SystemCommand("Workspaces", "Your rented instances", lambda: self.action_view("workspaces"))
+        yield SystemCommand("GPU offers", "Search GPU offers", lambda: self.action_view("market"))
+        yield SystemCommand("Instances", "Your rented instances", lambda: self.action_view("workspaces"))
         yield SystemCommand("Refresh", "Reload from the provider", self.action_refresh)
         yield SystemCommand("Filter", "Focus the filter field", self.action_filter)
         yield SystemCommand("Keyboard shortcuts", "Show every key cloudrig understands", self.action_help)
