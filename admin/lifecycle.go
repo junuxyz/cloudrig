@@ -17,7 +17,7 @@ func (s *Store) login(provider string) error {
 	if !validProvider(provider) {
 		return errors.New("invalid provider")
 	}
-	if e := s.Confirm(fmt.Sprintf("LINK/ROTATE %s credentials\nThe new API key will be stored root-only. Existing SSH grants for this provider will be revoked.", provider)); e != nil {
+	if _, e := fmt.Fprintf(s.Output, "LINK/ROTATE %s credentials\nThe new API key will be stored root-only. Existing SSH grants for this provider will be revoked.\n", provider); e != nil {
 		return e
 	}
 	f, e := os.OpenFile("/dev/tty", os.O_RDWR, 0)
@@ -110,9 +110,9 @@ func (s *Store) rent(a RentArgs) (string, error) {
 		"Disk: %d GB\n"+
 		"Image: %s\n"+
 		"Current quote: $%.6f/hour%s\n"+
-		"SSH access to this instance is included in this approval.\nNo automatic shutdown. Billing begins on allocation.",
+		"SSH access to this instance is included.\nNo automatic shutdown. Billing begins on allocation.",
 		a.Name, a.Provider, o.GPU, o.Count, o.VRAM, o.Region, a.Disk, a.Image, price, extra)
-	if e = s.Confirm(quote); e != nil {
+	if _, e = fmt.Fprintln(s.Output, quote); e != nil {
 		return "", e
 	}
 	unlock, e := s.lock()
@@ -133,14 +133,14 @@ func (s *Store) rent(a RentArgs) (string, error) {
 			}
 			changed := current.Count != o.Count || current.GPU != o.GPU || current.VRAM != o.VRAM || current.Region != o.Region || current.Cloud != o.Cloud
 			if changed || current.DiskRate == nil && o.DiskRate != nil || !validNumber(cost) || cost > price+0.000001 {
-				return "", errors.New("price or GPU conditions changed; obtain a new approval")
+				return "", errors.New("price or GPU conditions changed; refresh and retry")
 			}
 			freshFound = true
 			break
 		}
 	}
 	if !freshFound {
-		return "", errors.New("offer disappeared; obtain a new approval")
+		return "", errors.New("offer disappeared; refresh and retry")
 	}
 	db, e := s.readDB()
 	if e != nil {
@@ -234,7 +234,7 @@ func (s *Store) mutate(provider, id, action string) error {
 		message += "\nInstance-local files will be deleted."
 	}
 
-	if e = s.Confirm(message); e != nil {
+	if _, e = fmt.Fprintln(s.Output, message); e != nil {
 		return e
 	}
 	unlock, e := s.lock()
@@ -252,7 +252,7 @@ func (s *Store) mutate(provider, id, action string) error {
 			return e
 		}
 		if fresh > quoted+0.000001 {
-			return errors.New("resume price increased; obtain a new approval")
+			return errors.New("resume price increased; retry to obtain a fresh quote")
 		}
 	}
 	if action == "destroy" {

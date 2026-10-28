@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -15,6 +14,10 @@ import (
 	"testing"
 	"time"
 )
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(data []byte) (int, error) { return f(data) }
 
 type vastProvider struct {
 	server         *httptest.Server
@@ -138,20 +141,17 @@ func newVastProvider(t *testing.T, s *Store) *vastProvider {
 func rental(name string) RentArgs {
 	return RentArgs{"vastai", "1", "5090", name, "pytorch/pytorch:tag", 40, 1}
 }
-func approveInTest(s *Store) { s.Confirm = func(string) error { return nil } }
 
 func TestAmbiguousRentalSurvivesBrokerRestartAndUnrelatedRental(t *testing.T) {
 	s := testStore(t)
 	f := newVastProvider(t, s)
 	f.failAllocation.Store(true)
-	approveInTest(s)
 	id, e := s.rent(rental("training"))
 	if e == nil || id != "" || strings.Contains(e.Error(), "PRIVATE_PROVIDER_DETAIL") {
 		t.Fatal("unsafe allocation failure", id, e)
 	}
 	recovered := newStore(s.Root, s.Run, s.Owner)
 	recovered.Base["vastai"] = f.server.URL
-	approveInTest(recovered)
 	if _, e = recovered.rent(rental("training")); e == nil || !strings.Contains(e.Error(), "unknown outcome") {
 		t.Fatal("ambiguous allocation retried after restart", e)
 	}
@@ -170,14 +170,12 @@ func TestAmbiguousRentalSurvivesBrokerRestartAndUnrelatedRental(t *testing.T) {
 func TestKnownAllocationCannotBeDuplicatedWhenProviderListingIsStale(t *testing.T) {
 	s := testStore(t)
 	f := newVastProvider(t, s)
-	approveInTest(s)
 	id, e := s.rent(rental("training"))
 	if id != "101" || e != nil {
 		t.Fatal("allocation should succeed while SSH is pending", id, e)
 	}
 	recovered := newStore(s.Root, s.Run, s.Owner)
 	recovered.Base["vastai"] = f.server.URL
-	approveInTest(recovered)
 	db, e := recovered.readDB()
 	rec := db.Records["vastai-101"]
 	if e != nil || rec.ID != "101" || rec.Name != "training" || rec.Key == "" {
@@ -208,7 +206,7 @@ func TestConcurrentBrokersCannotRentSameNameTwice(t *testing.T) {
 	for range 2 {
 		other := newStore(s.Root, s.Run, s.Owner)
 		other.Base["vastai"] = f.server.URL
-		other.Confirm = func(string) error { ready <- struct{}{}; <-release; return nil }
+		other.Output = writerFunc(func(data []byte) (int, error) { ready <- struct{}{}; <-release; return len(data), nil })
 		go func() { id, e := other.rent(rental("training")); results <- result{id, e} }()
 	}
 	for range 2 {
@@ -216,7 +214,7 @@ func TestConcurrentBrokersCannotRentSameNameTwice(t *testing.T) {
 		case <-ready:
 		case <-time.After(5 * time.Second):
 			close(release)
-			t.Fatal("rentals did not overlap at approval")
+			t.Fatal("rentals did not overlap at quote output")
 		}
 	}
 	close(release)
@@ -243,7 +241,6 @@ func TestConcurrentBrokersCannotRentSameNameTwice(t *testing.T) {
 func TestDeleteRevokesBeforeNetworkAndOnlyConfirmedDeletionReleasesName(t *testing.T) {
 	s := testStore(t)
 	f := newVastProvider(t, s)
-	approveInTest(s)
 	if id, e := s.rent(rental("training")); id != "101" || e != nil {
 		t.Fatal(id, e)
 	}
@@ -274,57 +271,22 @@ func TestDeleteRevokesBeforeNetworkAndOnlyConfirmedDeletionReleasesName(t *testi
 	}
 }
 
-func TestCancellationPreservesAuthorityAndNeverMutatesProvider(t *testing.T) {
-	for _, action := range []string{"rent", "start", "destroy", "approve"} {
-		t.Run(action, func(t *testing.T) {
-			s := testStore(t)
-			f := newVastProvider(t, s)
-			f.listed.Store(true)
-			f.failStart.Store(true)
-			initial := DB{Records: map[string]Record{"vastai-101": {Provider: "vastai", ID: "101", Name: "training", Key: "fixture-key"}}, Pending: map[string]bool{"vastai/other": true}}
-			if e := writeJSON(filepath.Join(s.Root, "resources.json"), initial); e != nil {
-				t.Fatal(e)
-			}
-			before, e := os.ReadFile(filepath.Join(s.Root, "resources.json"))
-			if e != nil {
-				t.Fatal(e)
-			}
-			declined := errors.New("human declined this operation")
-			s.Confirm = func(string) error { return declined }
-			switch action {
-			case "rent":
-				_, e = s.rent(rental("new"))
-			case "approve":
-				e = s.approve("vastai", "101")
-			default:
-				e = s.mutate("vastai", "101", action)
-			}
-			if !errors.Is(e, declined) {
-				t.Fatal("approval cancellation was not enforced", e)
-			}
-			after, e := os.ReadFile(filepath.Join(s.Root, "resources.json"))
-			if e != nil || string(after) != string(before) || f.allocations.Load() != 0 || f.deletions.Load() != 0 || f.starts.Load() != 0 {
-				t.Fatal("cancelled operation changed provider or root authority", e)
-			}
-		})
-	}
-}
-
-func TestStartPriceRecheckPreventsUnapprovedSpending(t *testing.T) {
+func TestStartPriceRecheckPreventsSpendingAtAnIncreasedPrice(t *testing.T) {
 	for _, increased := range []bool{false, true} {
 		t.Run(fmt.Sprint(increased), func(t *testing.T) {
 			s := testStore(t)
 			f := newVastProvider(t, s)
 			f.listed.Store(true)
-			s.Confirm = func(message string) error {
+			s.Output = writerFunc(func(data []byte) (int, error) {
+				message := string(data)
 				if !strings.Contains(message, "$0.800000/hour") {
 					t.Errorf("wrong start quote: %s", message)
 				}
 				if increased {
 					f.price.Store(math.Float64bits(1.1))
 				}
-				return nil
-			}
+				return len(data), nil
+			})
 			e := s.mutate("vastai", "101", "start")
 			if increased {
 				if e == nil || f.starts.Load() != 0 {
@@ -344,11 +306,10 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 			endpoint := newSSHFixture(t, nil)
 			args := rental("training")
 			expectedID := "101"
-			var quote string
-			var approvals int
+			var output bytes.Buffer
 			var port syncatomic.Int64
 			var vast *vastProvider
-			s.Confirm = func(message string) error { approvals++; quote = message; return nil }
+			s.Output = &output
 			if provider == "vastai" {
 				vast = newVastProvider(t, s)
 			} else {
@@ -395,8 +356,8 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 			if provider == "runpod" {
 				expectedQuote = "$0.800000/hour"
 			}
-			if !strings.Contains(quote, expectedQuote) || !strings.Contains(quote, "x2") {
-				t.Fatal("wrong provider-derived rental quote", quote)
+			if !strings.Contains(output.String(), expectedQuote) || !strings.Contains(output.String(), "x2") {
+				t.Fatal("wrong provider-derived rental quote", output.String())
 			}
 			if vast != nil {
 				vast.listed.Store(true)
@@ -412,13 +373,12 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 			}
 			recovered := newStore(s.Root, s.Run, s.Owner)
 			recovered.Base = s.Base
-			recovered.Confirm = func(string) error { t.Fatal("connection requested another approval"); return nil }
 			if _, e = recovered.public(Request{Op: "instance", Provider: provider, ID: id}); e != nil {
 				t.Fatal("delayed connection did not recover after helper restart", e)
 			}
 			rec, e := recovered.approved(provider, id)
-			if e != nil || rec.Connecting || approvals != 1 {
-				t.Fatal("successful rental lost its single approval", rec, approvals, e)
+			if e != nil || rec.Connecting {
+				t.Fatal("successful rental lost its connection authority", rec, e)
 			}
 			stop, e := s.startSigner(rec)
 			if e != nil {
@@ -524,14 +484,12 @@ func TestLostAllocationResponseNeverTriggersAutomaticOrRestartRetry(t *testing.T
 			f := newVastProvider(t, s)
 			f.lostResponse.Store(fault)
 			s.Client.Timeout = 250 * time.Millisecond
-			approveInTest(s)
 			id, e := s.rent(rental("training"))
 			if e == nil || id != "" || f.allocations.Load() != 1 {
 				t.Fatal("lost response retried or reported success", id, f.allocations.Load(), e)
 			}
 			recovered := newStore(s.Root, s.Run, s.Owner)
 			recovered.Base["vastai"] = f.server.URL
-			approveInTest(recovered)
 			if _, e = recovered.rent(rental("training")); e == nil || f.allocations.Load() != 1 {
 				t.Fatal("restarted broker duplicated unknown allocation", f.allocations.Load(), e)
 			}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -241,7 +240,6 @@ func TestApprovedSSHAuthenticationThroughProxy(t *testing.T) {
 		}))
 		defer server.Close()
 		s.Base["runpod"] = server.URL
-		s.Confirm = func(string) error { return nil }
 		if e = s.approve("runpod", "ssh-test"); e != nil {
 			t.Fatal(e)
 		}
@@ -278,6 +276,13 @@ func mockVastQuotes(t *testing.T, s *Store, change string) *int {
 				region = "KR"
 			}
 			fmt.Fprintf(w, `{"offers":[{"id":%d,"gpu_name":"RTX 5090","num_gpus":2,"gpu_ram":32768,"dph_base":%f,"dph_total":%f,"storage_cost":0.72,"disk_space":100,"geolocation":%q}]}`, id, price, price+0.04, region)
+		case "/api/v1/instances/":
+			io.WriteString(w, `{"instances":[]}`)
+		case "/api/v0/asks/1/":
+			if r.Method != "PUT" {
+				t.Error("wrong allocation method", r.Method)
+			}
+			io.WriteString(w, `{"new_contract":101}`)
 		default:
 			t.Errorf("unexpected provider operation %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(500)
@@ -295,30 +300,19 @@ func TestRentalRevalidatesSelectedVastAskWhenBundleRepresentativeChanges(t *test
 	if e != nil || len(offers) != 1 {
 		t.Fatal("market search failed", offers, e)
 	}
-	var quote string
-	s.Confirm = func(message string) error { quote = message; return errors.New("cancelled") }
-	_, e = s.rent(RentArgs{"vastai", offers[0].ID, offers[0].GPU, "training", "pytorch/pytorch:tag", 40, offers[0].Count})
-	if e == nil || e.Error() != "cancelled" || !strings.Contains(quote, "$0.840000/hour") || *calls != 2 {
-		t.Fatal("selected ask lost during grouped market refresh", quote, *calls, e)
+	var output bytes.Buffer
+	s.Output = &output
+	id, e := s.rent(RentArgs{"vastai", offers[0].ID, offers[0].GPU, "training", "pytorch/pytorch:tag", 40, offers[0].Count})
+	if e != nil || id != "101" || !strings.Contains(output.String(), "$0.840000/hour") || *calls != 3 {
+		t.Fatal("selected ask lost during grouped market refresh", output.String(), *calls, e)
 	}
 }
 
-func TestPrivilegedRentalQuotesActualGPUCountAndDiskBeforeApproval(t *testing.T) {
-	s := testStore(t)
-	mockVastQuotes(t, s, "")
-	var quote string
-	s.Confirm = func(message string) error { quote = message; return errors.New("cancelled") }
-	_, e := s.rent(RentArgs{"vastai", "1", "5090", "training", "pytorch/pytorch:tag", 40, 1})
-	if e == nil || !strings.Contains(quote, "x2") || !strings.Contains(quote, "$0.840000/hour") {
-		t.Fatal("root quote did not use provider count/price/disk", quote, e)
-	}
-}
-func TestChangedQuoteAfterApprovalIsRejectedBeforeAllocation(t *testing.T) {
+func TestChangedQuoteIsRejectedBeforeAllocation(t *testing.T) {
 	for _, change := range []string{"price", "region"} {
 		t.Run(change, func(t *testing.T) {
 			s := testStore(t)
 			calls := mockVastQuotes(t, s, change)
-			s.Confirm = func(string) error { return nil }
 			if _, e := s.rent(RentArgs{"vastai", "1", "5090", "training", "pytorch/pytorch:tag", 40, 1}); e == nil || !strings.Contains(e.Error(), "changed") {
 				t.Fatal(e)
 			}

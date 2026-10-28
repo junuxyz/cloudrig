@@ -83,16 +83,11 @@ Resize, restart, volumes, top-ups, automatic payments, and budget changes are no
 this release. The ordinary channel rejects them; there is no arbitrary provider-API passthrough.
 A future implementation must be a separately reviewed privileged operation.
 
-`--yes` never skips sudo or the root helper's confirmation. Never give an AI your sudo password,
-put it in an environment variable, configure `sudo -S` automation, or approve a password prompt
-inside an agent-controlled terminal. Run privileged actions in a human-owned terminal.
-Each rent, start, delete, SSH authorization, and provider-key change requires its own explicit
-confirmation after fresh sudo authentication. The protected helper shows the exact action and
-generates a new `APPROVE <code>` challenge for that request. An earlier code, bare `APPROVE`,
-blank input, and blanket/batch approval are rejected. The helper reads confirmation from
-`/dev/tty`, and the client supplies no standard input to privileged commands. No approval session
-or "allow subsequent actions" switch exists. Cancelling a key change happens before reading or
-replacing the credential.
+Each rent, start, delete, SSH authorization, and provider-key change requires fresh sudo
+authentication. There is no additional typed approval code or confirmation prompt. The helper
+prints the operation and current quote, then proceeds with its validation and price recheck.
+`--yes` does not skip sudo. Credential login still asks for the API key with input hidden.
+Run privileged actions in your own terminal; do not forward passwords or automate `sudo -S`.
 
 If the local agent may have altered the CLI, use the installed helper directly from that terminal,
 for example on macOS:
@@ -122,7 +117,7 @@ listings with direct TCP connectivity. `--count` is a minimum on Vast.ai and an 
 RunPod. VRAM is per GPU. A `+` after a price means storage is extra and was not quoted.
 
 Selecting a row does not spend money. After the local review, the protected helper obtains its own
-provider quote, shows GPU/count/disk/image/location/rate in the terminal, and requires confirmation.
+provider quote and prints GPU/count/disk/image/location/rate in the terminal before allocation.
 It refreshes the quote again before submitting. It ignores any price displayed or invented by the
 unprivileged client. A provider may still change billing after allocation; this is not a provider
 price lock or hard spending cap.

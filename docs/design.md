@@ -14,7 +14,7 @@ except in demo mode. `?` lists every shortcut. While data loads, or when nothing
 wordmark splash fills the table area with the next useful keys. The sorted column is marked in the
 header.
 
-The main flow is search → review → fresh sudo → protected quote/confirmation → rent → connect.
+The main flow is search → review → fresh sudo → protected quote → rent → connect.
 Selecting a result never spends money. `/` filters, `s` sorts, `r` refreshes, and Escape cancels.
 
 Search and approved work stay unprivileged. The protected native component owns provider tokens,

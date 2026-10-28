@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ type Store struct {
 	Owner     Config
 	Client    *http.Client
 	Base      map[string]string
-	Confirm   func(string) error
+	Output    io.Writer
 }
 
 func newStore(root, run string, cfg Config) *Store {
@@ -30,8 +31,8 @@ func newStore(root, run string, cfg Config) *Store {
 			Timeout:       30 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		Base:    map[string]string{"vastai": "https://console.vast.ai", "runpod": "https://api.runpod.io"},
-		Confirm: ttyConfirm,
+		Base:   map[string]string{"vastai": "https://console.vast.ai", "runpod": "https://api.runpod.io"},
+		Output: os.Stderr,
 	}
 }
 

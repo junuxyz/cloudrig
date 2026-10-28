@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -195,11 +196,11 @@ func TestRunPodStartRequiresVerifiableGPUCountAndExactCloudPrice(t *testing.T) {
 			}))
 			defer server.Close()
 			s.Base["runpod"] = server.URL
-			var quote string
-			s.Confirm = func(message string) error { quote = message; return nil }
+			var quote bytes.Buffer
+			s.Output = &quote
 			e := s.mutate("runpod", "pod1", "start")
 			if count == 2 {
-				if e != nil || starts.Load() != 1 || !strings.Contains(quote, "$1.800000/hour") {
+				if e != nil || starts.Load() != 1 || !strings.Contains(quote.String(), "$1.800000/hour") {
 					t.Fatal("wrong GPU/cloud/count quote", quote, starts.Load(), e)
 				}
 			} else if e == nil || starts.Load() != 0 {

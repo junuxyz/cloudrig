@@ -1,6 +1,6 @@
 # Reliability test plan
 
-Scope: native credential/approval broker, provider mutations, SSH authority, and concurrent local
+Scope: native credential broker, provider mutations, SSH authority, and concurrent local
 state. No real provider, paid resource, root installation, or sudo-policy mutation is needed.
 
 ## Rules for accepting a test
@@ -22,7 +22,6 @@ state. No real provider, paid resource, root installation, or sudo-policy mutati
 | Rental recovery | Provider receives allocation but response fails | Exactly one allocation request. A fresh broker using the same disk state refuses a repeat. A different rental cannot erase the ambiguous receipt. |
 | Known allocation | SSH-key registration fails after an allocation ID is returned; listing is stale | The returned ID is on disk before registration. Retrying the same name cannot allocate a second GPU. |
 | Concurrent requests | Two broker instances rent the same name | A coordinated overlap results in exactly one allocation, including when the provider list is stale. Both calls terminate and recovery state is valid JSON. |
-| Approval | Cancel rent/start/delete/SSH authorization/key rotation | Explicit cancellation error, no billable/key mutation, and unchanged authority/credentials. Confirmed controls perform the expected mutation. |
 | Credential rotation | Provider validates/rejects a newly entered key | Rejection restores the old token and authority byte-for-byte. Success uses the new token, revokes only this provider's grants, and preserves unrelated pending requests. |
 | Start pricing | Price rises, missing/invalid contract quote, exact RunPod GPU/cloud/count | Increased/unverifiable quote cannot start; an unchanged quote starts exactly the intended instance with the correct payload. |
 | Delete | Provider delete fails or succeeds | Signing authority is revoked before the provider receives deletion. Failure retains a recovery record; confirmed deletion permits deliberate name reuse. |

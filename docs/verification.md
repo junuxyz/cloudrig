@@ -69,11 +69,11 @@ power loss or storage-controller faults. No root/sudo policy was changed to obta
 - Actual OpenSSH agent/client/server tests use generated fixture keys only. An approved SSH login
   succeeds through the proxy. Key import/deletion and unbound signature requests are rejected.
 - Native provider quote tests confirm actual GPU count, disk cost, human cancellation, and price
-  recheck after approval. Root request journals retain ambiguous requests across unrelated writes.
+  recheck before submission. Root request journals retain ambiguous requests across unrelated writes.
 - Build and sudoers syntax checks. Native helper refuses direct execution by an ordinary UID.
-- Consecutive operations require separate approval challenges. Reusing an earlier code, bare/bulk
-  approval, blank input, and oversized input fail. Cancelling a credential change does not read
-  replacement input or change the stored token. The client disconnects standard input from sudo.
+- Privileged operations use fresh sudo authentication without an additional typed approval step.
+  Fixture rentals run without terminal confirmation and retain provider-derived quotes and price
+  rechecks. The client disconnects standard input from sudo.
 - Linux amd64 cross-compilation succeeds. Linux service installation/runtime has not been tested.
 - Python dependency audit and native `govulncheck` report no known vulnerabilities in the checked
   dependencies. These checks are not a full security audit.

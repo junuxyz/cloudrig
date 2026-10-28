@@ -63,14 +63,13 @@ bypassing a helper-only timestamp rule. Passwordless/`!authenticate` grants bloc
 
 Every client invocation also uses `sudo -k`; this is supplemental, not the security boundary.
 Changing or removing that flag in Python does not change the installed sudo policy or give the
-caller access to root credentials. `--yes` does not bypass privileged approval. The helper checks
-its actual EUID and invoking user's sudo identity, validates the requested operation itself, and
-requires terminal confirmation for resource/SSH-authority changes and provider-key registration
-or rotation. Every request generates a fresh random approval challenge. Approval is consumed by
-that single operation, never cached, and cannot authorize another resource or action. The helper
-accepts no batch operation or blanket approval. A bare `APPROVE`, a previous request's code,
-empty input, and overlong input cancel the request. Confirmation uses `/dev/tty`; client standard
-input is disconnected. Key changes require confirmation before any secret input/storage.
+caller access to root credentials. `--yes` does not bypass sudo. The helper checks its actual EUID
+and invoking user's sudo identity and validates the requested operation itself. Sudo is the only
+interactive authorization step for resource and SSH-authority changes. The helper prints the action
+and current quote, then proceeds without a typed code or additional confirmation. These messages
+are informational; authenticating sudo does not separately confirm the displayed quote. The client
+supplies no standard input to privileged commands. Credential login still reads the API key through
+hidden terminal input after sudo authentication.
 
 Sudoers names only the supported helper verbs; there is no wildcard grant covering the helper's
 daemon or arbitrary future commands. Each invocation accepts one operation with its exact
@@ -85,8 +84,9 @@ path and the intended operation directly, without running the editable CLI as th
 point. The installer/artifact must already be trusted. OS permissions do not prevent password
 phishing by programs a human chooses to run.
 
-The helper re-queries the GPU offer instead of trusting the client's GPU count or price. A changed
-quote requires a new approval. Root receipts prevent silent repeat allocation after an ambiguous
+The helper re-queries the GPU offer instead of trusting the client's GPU count or price. A quote
+that changes during the helper operation is rejected; retrying requires fresh sudo authentication.
+Root receipts prevent silent repeat allocation after an ambiguous
 network result. Recorded names remain reserved even if provider listings are stale or deletion
 fails; only confirmed deletion releases the name. Start prices come from the existing Vast contract
 or exact RunPod GPU/cloud type and verified integer count;

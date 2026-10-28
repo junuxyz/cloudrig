@@ -84,7 +84,7 @@ Run crig doctor to check local tools.
     result.add_argument(
         "--yes",
         action="store_true",
-        help="Skip the local stop prompt; sudo and privileged confirmations are never skipped",
+        help="Skip the local stop prompt; fresh sudo authentication is still required",
     )
     result.add_argument(
         "--code",

@@ -273,7 +273,7 @@ func (s *Store) approve(provider, id string) error {
 	if !i.Direct {
 		return errors.New("direct SSH is required")
 	}
-	if e = s.Confirm(fmt.Sprintf("Authorize SSH to %s/%s (%s) at %s:%d?", provider, id, i.Name, i.Host, i.Port)); e != nil {
+	if _, e = fmt.Fprintf(s.Output, "SSH access: %s/%s (%s) at %s:%d\n", provider, id, i.Name, i.Host, i.Port); e != nil {
 		return e
 	}
 	unlock, e := s.lock()
