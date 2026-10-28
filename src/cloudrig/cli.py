@@ -294,7 +294,13 @@ def action(api, item: Instance, name: str, paths: list[str], args, startup_scrip
         alias_name = install_alias(fresh)
         if name == "ssh":
             run(ssh_command(alias_name))
-            console.print(f"Instance still rented. Stop: crig {item.id} stop", markup=False)
+            target = fresh.id
+            try:
+                if fresh.name and resolve(api, fresh.name).id == fresh.id:
+                    target = fresh.name
+            except CrigError:
+                pass  # Keep the ID if the name is ambiguous or no longer available.
+            console.print(f"Instance still rented. Stop: crig {shlex.quote(target)} stop", markup=False)
         elif name == "exec":
             full_ssh(fresh)
             if not paths:
