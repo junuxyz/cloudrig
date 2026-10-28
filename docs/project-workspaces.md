@@ -39,6 +39,7 @@ max_hourly = 0.80
 hours = 4
 # gpu = "5090"
 # region = "JP"
+# startup = "scripts/startup.sh"
 ```
 
 `max_hourly` is a search filter on quoted compute plus disk. The protected helper shows a fresh
@@ -49,6 +50,12 @@ quote, so its offers are excluded. Its existing market commands continue to work
 `crig plan --json`, `crig up --json`, and `crig up --plain` are read-only. Use `--offer ID` for a
 plain terminal review followed by human approval, or leave it out for the interactive review.
 Add `--no-code` to prepare without opening the editor.
+
+Use `startup` in the manifest or `--startup FILE` to replace the default remote setup with your
+own Bash script. Its path is relative to this project. Export the default with
+`crig startup > startup.sh` to keep rsync/uv installation and append your commands. The selected
+script runs before upload on every connection; edits apply to the next `up`. Logs are written
+to `~/.cache/cloudrig/startup.log` on the GPU. Script failures keep the same allocation for retry.
 
 The first `up` uploads this project with credential and cache exclusions. After upload, Cloudrig
 checks NVIDIA and PyTorch CUDA access, then opens the remote project directory. Add `--setup` to

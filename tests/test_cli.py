@@ -8,6 +8,7 @@ import pytest
 
 from cloudrig import state
 from cloudrig.cli import action, dispatch, parser
+from cloudrig.connections import default_startup_script
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError
 
@@ -21,6 +22,19 @@ def test_first_run_and_set_do_not_require_credentials(capsys):
     assert "crig --set vastai" in capsys.readouterr().out
     dispatch(args("--set", "vastai"))
     assert state.load()["provider"] == "vastai"
+
+
+def test_default_startup_can_be_exported_before_account_setup(capsys):
+    dispatch(args("startup"))
+    assert capsys.readouterr().out == default_startup_script()
+    assert not state.config_dir().exists()
+
+
+def test_missing_startup_fails_before_rental_or_provider_access(monkeypatch):
+    state.update(provider="vastai")
+    monkeypatch.setattr("cloudrig.cli.BrokerProvider", lambda _: pytest.fail("Contacted provider"))
+    with pytest.raises(CrigError, match="Cannot read startup script"):
+        dispatch(args("--gpu", "5090", "--rent", "84021", "--startup", "missing.sh"))
 
 
 def test_demo_never_contacts_privileged_service(monkeypatch, capsys):

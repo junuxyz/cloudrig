@@ -27,6 +27,7 @@ class Options:
     setup: bool = False
     open_editor: bool = True
     timeout: int = 300
+    startup_script: str | None = None
 
 
 def preflight(*, upload: bool, editor: bool) -> None:
@@ -79,8 +80,8 @@ def prepare(project: Project, api, binding: Binding, options: Options) -> Bindin
     console.print(
         Text(f"Workspace instance: {binding.id}. Recovery: crig up {shlex.quote(str(project.root))}")
     )
-    with console.status("Preparing SSH, rsync, and uv…"):
-        item = wait_ready(api, binding.id, timeout=options.timeout)
+    with console.status("Preparing SSH and running startup…"):
+        item = wait_ready(api, binding.id, timeout=options.timeout, startup_script=options.startup_script)
     name = alias(item)
     if binding.needs_upload:
         console.print("Uploading the project. Credentials, .git, .venv, and caches are excluded.")

@@ -196,13 +196,41 @@ Rsync uses protected arguments and safe links. Both ends need upstream rsync 3.5
 strings, including distro backports, are rejected because this tool cannot verify their patches.
 Cloudrig prepares rsync and uv over SSH before connecting or uploading. On Debian/Ubuntu images
 with root SSH, missing tools are installed automatically under `/usr/local/bin`; existing tools
-that meet the requirements are kept. Setup logs stay at `/var/log/cloudrig-bootstrap.log` on the GPU.
+that meet the requirements are kept. Startup logs stay at `~/.cache/cloudrig/startup.log` on the GPU.
 Uploads exclude `.env*`, SSH/cloud credential folders, common private-key names, `*.pem`, `*.key`,
 `.git`, and `.venv`. Home/root and credential paths cannot be direct transfer roots. These rules
 are filename filters, not a secret-content scanner. Review dry runs for unfamiliar projects.
 
 Disconnecting does not stop billing. Transfers may incur provider data charges. The root boundary
 gates new infrastructure/credential changes; it does not cap usage on already approved resources.
+
+## Custom startup scripts
+
+Export the default script, edit it, and use your copy:
+
+```sh
+crig startup > startup.sh
+crig --startup startup.sh --gpu 5090
+crig training code --startup startup.sh
+```
+
+You can keep the exported tool installation and add commands at the bottom, or replace the entire
+script. A selected script replaces the built-in setup. It runs with Bash on the GPU before project
+upload, each time Cloudrig prepares a connection. Files are read again on each command, so edits
+apply to the next connection. Write commands that are safe to run more than once.
+An empty script, such as `--startup /dev/null`, skips startup without clearing the previous log.
+
+For project commands, save the path in `crig.toml`:
+
+```toml
+[workspace]
+startup = "scripts/startup.sh"
+```
+
+`crig up . --startup other.sh` overrides that setting. Project paths are relative to the project
+directory; ordinary `crig --startup` paths are relative to the current directory. Missing or unreadable
+scripts fail before a rental is submitted. Script failures keep the existing instance for retry.
+Use `--timeout 900` if SSH and startup need more than the default five minutes.
 
 ## Security scope
 

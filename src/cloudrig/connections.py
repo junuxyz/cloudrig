@@ -162,7 +162,9 @@ def ssh_command(name: str, *arguments: str, tty: bool = False) -> list[str]:
     return [*argv, name, *arguments]
 
 
-def wait_ready(provider, identifier: str, timeout: float = 300) -> Instance:
+def wait_ready(
+    provider, identifier: str, timeout: float = 300, *, startup_script: str | None = None
+) -> Instance:
     deadline = time.monotonic() + timeout
     while True:
         item = provider.instance(identifier)
@@ -197,7 +199,7 @@ def wait_ready(provider, identifier: str, timeout: float = 300) -> Instance:
                 env=child_environment(),
             )
             if result.returncode == 0:
-                prepare_remote_tools(name, timeout=max(1, deadline - time.monotonic()))
+                run_startup(name, timeout=max(1, deadline - time.monotonic()), script=startup_script)
                 return item
         if time.monotonic() >= deadline:
             raise CrigError(
@@ -251,13 +253,35 @@ SECRET_EXCLUDES = (
 )
 
 
-def prepare_remote_tools(name: str, timeout: float) -> None:
-    script = files("cloudrig").joinpath("bootstrap.sh").read_text(encoding="utf-8")
+def default_startup_script() -> str:
+    return files("cloudrig").joinpath("bootstrap.sh").read_text(encoding="utf-8")
+
+
+def load_startup_script(path: str | None, *, root: Path = Path(".")) -> str | None:
+    if not path:
+        return None
+    safe_text(path)
+    source = Path(path).expanduser()
+    source = (root / source).resolve()
+    check_transfer_path(source)
+    try:
+        return source.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise CrigError(f"Cannot read startup script: {source}") from error
+
+
+def run_startup(name: str, timeout: float, *, script: str | None = None) -> None:
+    if script == "":
+        return
     minimum = ".".join(map(str, MIN_RSYNC))
+    command = (
+        'mkdir -p "$HOME/.cache/cloudrig" && '
+        f'bash -se -- {minimum} > "$HOME/.cache/cloudrig/startup.log" 2>&1'
+    )
     try:
         result = subprocess.run(
-            ssh_command(name, f"sh -s -- {minimum}"),
-            input=script,
+            ssh_command(name, command),
+            input=default_startup_script() if script is None else script,
             capture_output=True,
             text=True,
             check=False,
@@ -266,13 +290,13 @@ def prepare_remote_tools(name: str, timeout: float) -> None:
         )
     except subprocess.TimeoutExpired as error:
         raise CrigError(
-            "GPU tool setup timed out. Reconnect to continue on the same instance. "
-            "Setup log: /var/log/cloudrig-bootstrap.log."
+            "GPU startup script timed out. Reconnect to retry on the same instance. "
+            "Remote log: ~/.cache/cloudrig/startup.log."
         ) from error
-    if result.returncode == 77:
+    if result.returncode == 77 and script is None:
         raise CrigError("Automatic GPU tool installation needs root SSH. Preinstall rsync 3.5.0+ and uv.")
     if result.returncode:
-        raise CrigError("GPU tool setup failed. See /var/log/cloudrig-bootstrap.log on the GPU.")
+        raise CrigError("GPU startup script failed. Remote log: ~/.cache/cloudrig/startup.log.")
 
 
 def check_rsync() -> tuple[int, int, int]:

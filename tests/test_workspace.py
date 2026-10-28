@@ -33,6 +33,22 @@ def test_partial_manifest_keeps_global_provider_preference(project):
     assert load_project(str(project.root), default_provider="runpod", provider="vastai").provider == "vastai"
 
 
+def test_project_startup_resolves_from_project_and_cli_can_override_it(project, monkeypatch):
+    (project.root / "crig.toml").write_text('[workspace]\nstartup = "startup.sh"\n')
+    (project.root / "startup.sh").write_text("echo manifest\n")
+    (project.root / "override.sh").write_text("echo override\n")
+    monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: Demo())
+    monkeypatch.setattr(workspace_cli, "preflight", lambda **kwargs: None)
+    monkeypatch.setattr(workspace_cli, "prompt_confirm", lambda _: None)
+    scripts = []
+    monkeypatch.setattr(
+        workspace_cli, "launch", lambda p, a, t, options: scripts.append(options.startup_script)
+    )
+    for flags in ([], ["--startup", "override.sh"]):
+        workspace_cli.dispatch(["up", str(project.root), "--offer", "84021", "--no-code", *flags])
+    assert scripts == ["echo manifest\n", "echo override\n"]
+
+
 def test_existing_receipts_keep_their_allocation_and_environment(project):
     state.update(
         projects={

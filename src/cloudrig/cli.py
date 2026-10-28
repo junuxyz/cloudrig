@@ -12,8 +12,10 @@ from cloudrig import __version__, state
 from cloudrig.broker import BrokerProvider
 from cloudrig.connections import (
     alias,
+    default_startup_script,
     full_ssh,
     install_alias,
+    load_startup_script,
     open_code,
     run,
     ssh_command,
@@ -45,6 +47,8 @@ Everyday:
   crig training push ./ /workspace/project/
   crig training pull /workspace/outputs/ ./outputs/
   crig training exec -- nvidia-smi
+  crig startup > startup.sh  Export the default startup script to edit
+  crig --startup startup.sh --gpu 5090
 
 Try without an account:
   crig --demo --gpu 5090
@@ -81,6 +85,7 @@ Run crig doctor to check local tools.
     )
     result.add_argument("--name", help="Workspace name for --rent")
     result.add_argument("--image", help="Override the default container image")
+    result.add_argument("--startup", metavar="FILE", help="Replace the default startup with this Bash script")
     result.add_argument(
         "--yes",
         action="store_true",
@@ -96,7 +101,7 @@ Run crig doctor to check local tools.
     result.add_argument(
         "--dry-run", action="store_true", help="Preview file transfer without modifying files"
     )
-    result.add_argument("--timeout", type=int, default=300, help="Seconds to wait for SSH after renting")
+    result.add_argument("--timeout", type=int, default=300, help="Seconds for SSH and startup (default: 300)")
     return result
 
 
@@ -168,15 +173,15 @@ def resolve(api, target: str | None) -> Instance:
     raise CrigError("Choose an instance: crig NAME ssh. List names with crig --rented.")
 
 
-def rent(api, rental: Rental, args):
+def rent(api, rental: Rental, args, startup_script: str | None = None):
     if args.demo:
         console.print("Demo rental reviewed. No resource or credential was changed.")
         return
     identifier = api.rent(rental)
     state.remember_instance(api.name, identifier)
     console.print(Text(f"Rented {rental.name} · {identifier}", style="green"))
-    with console.status("Preparing SSH, rsync, and uv…"):
-        instance = wait_ready(api, identifier, timeout=args.timeout)
+    with console.status("Preparing SSH and running startup…"):
+        instance = wait_ready(api, identifier, timeout=args.timeout, startup_script=startup_script)
     name = alias(instance)
     if args.code:
         open_code(instance, "/workspace" if args.code == "." else args.code)
@@ -184,15 +189,15 @@ def rent(api, rental: Rental, args):
         run(ssh_command(name))
 
 
-def finish(api, result, args):
+def finish(api, result, args, startup_script: str | None = None):
     # The TUI can switch between market and workspaces, so either result may come back.
     if isinstance(result, Rental):
-        rent(api, result, args)
+        rent(api, result, args, startup_script)
     elif isinstance(result, InstanceAction):
-        action(api, result.instance, result.action, [], args)
+        action(api, result.instance, result.action, [], args, startup_script)
 
 
-def action(api, item: Instance, name: str, paths: list[str], args):
+def action(api, item: Instance, name: str, paths: list[str], args, startup_script: str | None = None):
     if args.demo:
         console.print(Text(f"Demo: {name} → {item.name}. No SSH, files, or cloud resources were changed."))
         return
@@ -216,8 +221,8 @@ def action(api, item: Instance, name: str, paths: list[str], args):
         raise CrigError(f"Instance is {fresh.status}. Start it with crig {item.id} start.")
     if not fresh.approved:
         api.approve(item.id)
-    with console.status("Preparing SSH, rsync, and uv…"):
-        fresh = wait_ready(api, item.id, timeout=args.timeout)
+    with console.status("Preparing SSH and running startup…"):
+        fresh = wait_ready(api, item.id, timeout=args.timeout, startup_script=startup_script)
     state.remember_instance(api.name, item.id)
     if name == "code":
         remote = paths[0] if paths else "/workspace"
@@ -298,6 +303,9 @@ def dispatch(args):
     if args.count < 1 or args.disk < 1 or args.timeout < 1:
         raise CrigError("--count, --disk, and --timeout must be positive.")
     words = args.words
+    if words == ["startup"]:
+        sys.stdout.write(default_startup_script())
+        return
     if words and words[0] == "self-test":
         from cloudrig.broker import admin
 
@@ -327,6 +335,7 @@ def dispatch(args):
     if command == "login":
         login(provider)
         return
+    startup_script = load_startup_script(args.startup)
     api = Demo() if args.demo else BrokerProvider(provider)
     if command == "billing":
         if args.demo:
@@ -361,14 +370,14 @@ def dispatch(args):
                 console.print(
                     "Storage extra where marked '+'. Billing starts on rental; data transfer may cost extra."
                 )
-                rent(api, rental, args)
+                rent(api, rental, args, startup_script)
             else:
                 print_rows(offers, args)
             return
         result = CloudrigApp(
             api, args.gpu, disk=args.disk, count=args.count, sort=args.sort, demo=args.demo, image=args.image
         ).run()
-        finish(api, result, args)
+        finish(api, result, args, startup_script)
         return
     if args.rent:
         raise CrigError("Use --rent with --gpu QUERY so the current offer and price can be reviewed.")
@@ -382,14 +391,14 @@ def dispatch(args):
                 "Unknown action. Use ssh, code, exec, agent, push, pull, start, stop, or destroy."
             )
         item = resolve(api, target)
-        action(api, item, selected, paths, args)
+        action(api, item, selected, paths, args, startup_script)
         return
     args.rented = True
     if args.plain or args.json or not sys.stdin.isatty():
         print_rows(api.instances(), args)
     else:
         result = CloudrigApp(api, rented=True, demo=args.demo, image=args.image).run()
-        finish(api, result, args)
+        finish(api, result, args, startup_script)
 
 
 def main():

@@ -11,6 +11,7 @@ from rich.text import Text
 
 from cloudrig import state
 from cloudrig.broker import BrokerProvider
+from cloudrig.connections import load_startup_script
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError, Offer, Rental, instance_id
 from cloudrig.project import (
@@ -54,6 +55,9 @@ def parser() -> argparse.ArgumentParser:
         )
         cmd.add_argument("--region", help="Location substring filter, such as JP. No inferred latency.")
         cmd.add_argument("--image", help="Container image override")
+        cmd.add_argument(
+            "--startup", metavar="FILE", help="Replace the default startup with this Bash script"
+        )
         cmd.add_argument("--plain", action="store_true", help="Print plan without the interactive review")
         cmd.add_argument("--json", action="store_true", help="Print plan as JSON; never rent")
         cmd.add_argument("--offer", help="Review this exact matching offer in a terminal")
@@ -62,7 +66,7 @@ def parser() -> argparse.ArgumentParser:
             "--setup", action="store_true", help="Run detected uv/pip install remotely on first setup"
         )
         cmd.add_argument("--no-code", action="store_true", help="Prepare without opening VS Code")
-        cmd.add_argument("--timeout", type=int, default=300, help="SSH readiness timeout in seconds")
+        cmd.add_argument("--timeout", type=int, default=300, help="SSH and startup timeout in seconds")
     return result
 
 
@@ -91,6 +95,8 @@ def show_plan(project: Project, rows: list[Offer], binding: Binding | None, setu
     if not rows and not binding:
         console.print("No complete quotes match. Change --vram, --max-hourly, --region, or --gpu.")
     console.print(Text(f"Remote: {project.remote}\nImage: {project.image}"))
+    if project.startup:
+        console.print(Text(f"Startup: {project.startup}"))
     console.print("First up: SSH → upload → CUDA check → VS Code. Next up: reconnect without upload.")
     if setup and project.setup:
         console.print(Text(f"Remote dependency install: {shlex.join(project.setup)}"))
@@ -101,7 +107,12 @@ def init_project(project: Project, demo: bool) -> None:
     settings = (
         f"{key} = {json.dumps(getattr(project, key))}\n" for key in SETTINGS if getattr(project, key) != ""
     )
-    content = "[workspace]\n" + "".join(settings) + "# hours estimates cost; it does not stop billing.\n"
+    content = (
+        "[workspace]\n"
+        + "".join(settings)
+        + '# startup = "startup.sh"  # Replaces the built-in rsync/uv setup.\n'
+        + "# hours estimates cost; it does not stop billing.\n"
+    )
     if demo:
         console.print(content, markup=False)
         return
@@ -174,6 +185,9 @@ def dispatch(argv):
         return
     if args.demo and project.provider != "vastai":
         raise CrigError("The workspace demo uses Vast.ai fixtures. Use --provider vastai.")
+    startup_script = (
+        load_startup_script(project.startup, root=project.root) if args.command in {"plan", "up"} else None
+    )
     api = Demo() if args.demo else BrokerProvider(project.provider)
     project = replace(project, image=project.image or api.default_image)
     binding = None if args.demo else receipt(project)
@@ -210,5 +224,10 @@ def dispatch(argv):
         target = select_target(project, api, args)
         if target is not None:
             preflight(upload=isinstance(target, Rental) or target.needs_upload, editor=not args.no_code)
-            options = Options(setup=args.setup, open_editor=not args.no_code, timeout=args.timeout)
+            options = Options(
+                setup=args.setup,
+                open_editor=not args.no_code,
+                timeout=args.timeout,
+                startup_script=startup_script,
+            )
             launch(project, api, target, options)

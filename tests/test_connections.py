@@ -10,7 +10,14 @@ from types import SimpleNamespace
 import pytest
 
 from cloudrig import broker
-from cloudrig.connections import install_alias, open_code, sync_command, wait_ready
+from cloudrig.connections import (
+    install_alias,
+    load_startup_script,
+    open_code,
+    run_startup,
+    sync_command,
+    wait_ready,
+)
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError
 
@@ -90,8 +97,8 @@ def test_startup_waits_for_remote_tools_and_surfaces_failures(grant, monkeypatch
         remote.append(argv[-1])
         if argv[-1] == "true":
             return subprocess.CompletedProcess(argv, 0)
-        assert argv[-1] == "sh -s -- 3.5.0"
-        assert kwargs["input"].startswith("#!/bin/sh\n")
+        assert "bash -se -- 3.5.0" in argv[-1]
+        assert kwargs["input"].startswith("#!/usr/bin/env bash\n")
         assert kwargs["timeout"] > 0
         if outcome == "timeout":
             raise subprocess.TimeoutExpired(argv, kwargs["timeout"], stderr="SECRET")
@@ -105,7 +112,29 @@ def test_startup_waits_for_remote_tools_and_surfaces_failures(grant, monkeypatch
         with pytest.raises(CrigError) as error:
             wait_ready(provider, grant.id)
         assert "SECRET" not in str(error.value)
-    assert remote == ["true", "sh -s -- 3.5.0"]
+    assert remote[0] == "true" and len(remote) == 2
+
+
+def test_custom_startup_uses_bash_and_rereads_edits(monkeypatch, tmp_path, isolated_home):
+    source = tmp_path / "startup.sh"
+    marker = isolated_home / "custom-startup"
+    transport = tmp_path / "ssh"
+    transport.write_text('#!/bin/sh\nexec /bin/sh -c "$2"\n')
+    transport.chmod(0o755)
+    monkeypatch.setattr(
+        "cloudrig.connections.ssh_command", lambda name, command: [str(transport), name, command]
+    )
+    for value in ("first", "edited"):
+        source.write_text(f'values=({value} bash)\nprintf "%s" "${{values[0]}}" > "$HOME/custom-startup"\n')
+        run_startup("fixture", 10, script=load_startup_script(str(source)))
+        assert marker.read_text() == value
+    assert (isolated_home / ".cache/cloudrig/startup.log").exists()
+    with pytest.raises(CrigError, match="startup script failed"):
+        run_startup("fixture", 10, script='echo "custom error" >&2\nfalse\n')
+    log = isolated_home / ".cache/cloudrig/startup.log"
+    assert "custom error" in log.read_text()
+    run_startup("fixture", 10, script="")
+    assert "custom error" in log.read_text()
 
 
 def test_real_rsync_copy_works_with_ssh_transport_and_secret_exclusions(grant, monkeypatch, tmp_path):

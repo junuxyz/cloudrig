@@ -29,6 +29,7 @@ class Project:
     hours: float = 4
     region: str = ""
     image: str = ""
+    startup: str = ""
 
     @property
     def key(self) -> str:
@@ -54,7 +55,7 @@ class Project:
         return {**asdict(self), "root": str(self.root), "remote": self.remote, "setup": self.setup}
 
 
-SETTINGS = ("provider", "gpu", "vram", "count", "disk", "max_hourly", "hours", "region", "image")
+SETTINGS = ("provider", "gpu", "vram", "count", "disk", "max_hourly", "hours", "region", "image", "startup")
 
 
 def load_project(path: str, *, default_provider: str = "vastai", **overrides) -> Project:
@@ -84,7 +85,7 @@ def load_project(path: str, *, default_provider: str = "vastai", **overrides) ->
         limit = 64 if field == "count" else 100000
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= limit:
             raise CrigError(f"Workspace {field} must be a positive integer.")
-    for field in ("gpu", "region", "image"):
+    for field in ("gpu", "region", "image", "startup"):
         safe_text(getattr(project, field))
     if any(c.isspace() for c in project.image):
         raise CrigError("Use a container image without spaces.")
