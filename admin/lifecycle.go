@@ -109,8 +109,7 @@ func (s *Store) rent(a RentArgs) (string, error) {
 		"Location: %s\n"+
 		"Disk: %d GB\n"+
 		"Image: %s\n"+
-		"Current quote: $%.6f/hour%s\n"+
-		"SSH access to this instance is included.\nNo automatic shutdown. Billing begins on allocation.",
+		"Current quote: $%.6f/hour%s",
 		a.Name, a.Provider, o.GPU, o.Count, o.VRAM, o.Region, a.Disk, a.Image, price, extra)
 	if _, e = fmt.Fprintln(s.Output, quote); e != nil {
 		return "", e
@@ -207,7 +206,7 @@ func (s *Store) rent(a RentArgs) (string, error) {
 	if e = writeJSON(filepath.Join(s.Root, "resources.json"), db); e != nil {
 		return id, e
 	}
-	fmt.Fprintf(os.Stderr, "Allocated %s. SSH setup will continue automatically; the instance is billable.\n", id)
+	fmt.Fprintf(os.Stderr, "Allocated %s.\n", id)
 	return id, nil
 }
 
