@@ -1,34 +1,21 @@
-# Project workspace prototype
+# Project workspaces
 
-Branch: `project-first-workspaces`.
-
-Try the actual terminal flow without an account:
-
-```sh
-cd /Users/USER/Projects/dev/cloudrig
-uv run crig up . --demo --vram 32
-```
-
-Use the arrow keys to choose an offer. Enter focuses the review button; Enter again confirms the
-demo selection and exits. Escape or `q` exits. No rental, SSH, upload, editor launch, or configuration write
-occurs in demo mode.
-
-![Project review using fictional offers](project-workspace.svg)
-
-## Live use
-
-Complete the existing [installation and account setup](../README.md#install), then run:
+A workspace connects one local project to one rented GPU and remote folder. `crig up` rents once,
+then reconnects to that instance. Setup failures and missing instances never trigger a replacement.
 
 ```sh
-crig init /path/to/project
-crig plan /path/to/project
-crig up /path/to/project
-crig status                   # Check background setup
-crig up /path/to/project       # Reconnect; keep remote edits
-crig down /path/to/project     # Confirm and stop compute; disk charges may remain
+crig up /path/to/project --setup
 ```
 
-The `crig.toml` file records defaults. Command-line values override it:
+Choose an offer in the project browser. Use `--numbered` for prompts or `--demo` for fictional
+offers without rental, upload, editor launch, or configuration writes.
+
+![Project review with fictional offers](project-workspace.svg)
+
+## Settings
+
+No configuration file is required. `crig init PATH` writes defaults to `crig.toml`.
+Command options override saved settings.
 
 ```toml
 [workspace]
@@ -38,49 +25,55 @@ count = 1
 disk = 80
 max_hourly = 0.80
 hours = 4
-# gpu = "5090"
-# region = "JP"
+# framework = "pytorch"
 # startup = "scripts/startup.sh"
 ```
 
-`max_hourly` is a search filter on quoted compute plus disk. The protected helper shows a fresh
-quote before rental. It is not a spending cap. `hours` is for planning and never shuts down the GPU.
-The project launcher currently targets Vast's complete quotes. Runpod's adapter lacks a storage
-quote, so its offers are excluded. Its existing market commands continue to work.
+| Setting | Meaning |
+| --- | --- |
+| `provider` | New project rentals currently require Vast.ai. |
+| `gpu`, `region` | Optional name and location substring filters. |
+| `vram`, `count` | Minimum memory per GPU in GB and exact GPU count. |
+| `disk` | Container disk in GB. |
+| `max_hourly` | Search limit for compute plus disk, not a total-spending cap. |
+| `hours` | Cost estimate only; it does not schedule shutdown. |
+| `image` | Optional container image. |
+| `framework` | `none` checks the NVIDIA driver; `pytorch` also checks CUDA in the project environment. |
+| `startup` | Optional script replacing the default rsync/uv setup. Relative to the project. |
 
-`crig plan --json`, `crig up --json`, and `crig up --plain` are read-only. Use `--offer ID` for a
-plain terminal review followed by human approval, or leave it out for the interactive review.
-By default, `up` returns after saving the allocation and starts preparation in the background.
-It opens VS Code and requests a desktop notification when ready. Check saved progress and errors
-with `crig status`. Add `--wait` to finish in this terminal, or `--no-code` to skip opening the editor.
-Keep the local computer awake and connected until setup finishes.
+The helper rejects new rental quotes above the reviewed price. It does not lock future prices or
+cap later charges. Storage and transfers can cost extra after compute stops.
 
-Use `startup` in the manifest or `--startup FILE` to replace the default remote setup with your
-own Bash script. Its path is relative to this project. Export the default with
-`crig startup > startup.sh` to keep rsync/uv installation and append your commands. The selected
-script runs before upload on every connection; edits apply to the next `up`. Logs are written
-to `~/.cache/cloudrig/startup.log` on the GPU. Script failures keep the same allocation for retry.
+## Preparation and files
 
-The first `up` uploads this project with credential and cache exclusions. After upload, Cloudrig
-checks NVIDIA and PyTorch CUDA access, then opens the remote project directory. Add `--setup` to
-run the detected uv or requirements-file installer remotely. Before upload, Cloudrig installs
-rsync 3.5.1 and uv if needed on Debian/Ubuntu images with root SSH. A repeat `up` preserves remote
-edits and reuses its saved Python environment.
+The first connection uploads files, checks the GPU, and opens VS Code. `--setup` installs from
+`uv.lock` or `requirements.txt`; other dependency managers need a custom script or manual setup.
+Use `--no-code` to skip the editor or `--wait` to prepare in the current terminal.
 
-If setup is interrupted, `up` keeps the allocation and retries its unfinished preparation. It asks
-before repeating an incomplete upload because matching remote files can be overwritten. After an
-ambiguous rental response, inspect `crig --rented` and your provider console before using
-`crig up --attach ID`. An instance must already have an approved connection before attachment.
+Background progress appears in the dashboard. View setup or `g` shows events and errors.
+Keep this computer awake and connected until preparation finishes. `crig status` prints saved
+progress for scripts; neither view checks continuous GPU health.
 
-If you cancelled before allocation, or verified that the old allocation was deleted, use
-`crig forget PATH` to clear its local binding. This requires confirmation and never stops or deletes
-anything at the provider. Check the provider account first because a later `up` may request a rental.
+Preview uploads with `crig plan PATH --files`. Transfers apply Git ignores, `.crigignore`, and
+built-in filename exclusions. They exclude Git metadata, common credential files, environments,
+and caches. They do not inspect file contents for secrets.
 
-Use the existing `crig NAME pull REMOTE LOCAL` to retrieve remote changes and experiment outputs.
-Closing VS Code does not stop billing. Stop with `crig down`; delete separately through the
-existing privileged lifecycle command after retrieving your files.
+Later connections preserve remote edits and do not upload again. Use `crig NAME push LOCAL REMOTE`
+or `crig NAME pull REMOTE LOCAL` for changes. Retrieve outputs before deleting the instance.
 
-For findings, alternatives, priorities, and verification limits, read
-[the research and design review](workspace-research.md).
+Startup scripts run before upload on each preparation. Write them to tolerate repeated execution.
+An empty script skips startup. Remote logs are at `~/.cache/cloudrig/startup.log`.
+Plain `crig NAME ssh` skips default startup for repair access.
 
-Regenerate SVG previews with `uv run python scripts/preview-workspace.py`.
+## Recovery
+
+Retry setup on the same instance. A completed upload is not repeated; an incomplete upload needs
+confirmation. A saved binding keeps its provider after the global default changes.
+Moving a project folder requires explicit reattachment.
+
+For a lost rental response, check the provider console before following
+[recovery commands](guide.md#recover-a-failed-setup-or-uncertain-rental).
+Stop compute with `crig down PATH`. Closing the editor does not stop billing.
+
+See [architecture](architecture.md), [verification](verification.md), and [design choices](workspace-research.md).
+Regenerate previews with `uv run python scripts/preview.py`.

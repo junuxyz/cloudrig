@@ -120,8 +120,16 @@ func TestNativeAgentCannotExportOrPerformUnboundSignatures(t *testing.T) {
 	pub, _ := os.ReadFile(host + ".pub")
 	known := filepath.Join(s.Root, "known")
 	os.WriteFile(known, append([]byte("vastai-1 "), pub...), 0600)
-	rec := Record{Provider: "vastai", ID: "1", User: "root", Host: "203.0.113.1", Port: 22, Key: key, KnownHosts: known}
-	writeJSON(filepath.Join(s.Root, "resources.json"), DB{map[string]Record{"vastai-1": rec}, map[string]bool{}})
+	rec := Record{
+		Provider:   "vastai",
+		ID:         "1",
+		User:       "root",
+		Host:       "203.0.113.1",
+		Port:       22,
+		Key:        key,
+		KnownHosts: known,
+	}
+	writeJSON(filepath.Join(s.Root, "resources.json"), DB{Records: map[string]Record{"vastai-1": rec}, Pending: map[string]bool{}})
 	stop, e := s.startSigner(rec)
 	if e != nil {
 		t.Fatal(e)
@@ -131,7 +139,8 @@ func TestNativeAgentCannotExportOrPerformUnboundSignatures(t *testing.T) {
 	cmd := exec.Command("/usr/bin/ssh-add", "-L")
 	cmd.Env = append(os.Environ(), "SSH_AUTH_SOCK="+proxy)
 	out, e := cmd.CombinedOutput()
-	if e != nil || !bytes.Contains(out, []byte("ssh-ed25519")) || bytes.Contains(out, []byte("PRIVATE KEY")) {
+	if e != nil || !bytes.Contains(out, []byte("ssh-ed25519")) ||
+		bytes.Contains(out, []byte("PRIVATE KEY")) {
 		t.Fatalf("public identities: %s %v", out, e)
 	}
 	for _, args := range [][]string{{"-T", key + ".pub"}, {"-D"}, {key}} {
@@ -204,8 +213,16 @@ func TestApprovedSSHAuthenticationThroughProxy(t *testing.T) {
 	known := filepath.Join(s.Root, "known")
 	hostPub, _ := os.ReadFile(host + ".pub")
 	os.WriteFile(known, append([]byte("vastai-ssh-test "), hostPub...), 0600)
-	rec := Record{Provider: "vastai", ID: "ssh-test", User: username, Host: "127.0.0.1", Port: port, Key: key, KnownHosts: known}
-	writeJSON(filepath.Join(s.Root, "resources.json"), DB{map[string]Record{"vastai-ssh-test": rec}, map[string]bool{}})
+	rec := Record{
+		Provider:   "vastai",
+		ID:         "ssh-test",
+		User:       username,
+		Host:       "127.0.0.1",
+		Port:       port,
+		Key:        key,
+		KnownHosts: known,
+	}
+	writeJSON(filepath.Join(s.Root, "resources.json"), DB{Records: map[string]Record{"vastai-ssh-test": rec}, Pending: map[string]bool{}})
 	stop, e := s.startSigner(rec)
 	if e != nil {
 		t.Fatal(e)
@@ -236,7 +253,12 @@ func TestApprovedSSHAuthenticationThroughProxy(t *testing.T) {
 				w.WriteHeader(500)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"id": "ssh-test", "name": "fixture", "cost": 0.5, "ssh": map[string]any{"direct": map[string]any{"host": "127.0.0.1", "port": port, "username": username}}})
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":   "ssh-test",
+				"name": "fixture",
+				"cost": 0.5,
+				"ssh":  map[string]any{"direct": map[string]any{"host": "127.0.0.1", "port": port, "username": username}},
+			})
 		}))
 		defer server.Close()
 		s.Base["runpod"] = server.URL
@@ -302,7 +324,7 @@ func TestRentalRevalidatesSelectedVastAskWhenBundleRepresentativeChanges(t *test
 	}
 	var output bytes.Buffer
 	s.Output = &output
-	id, e := s.rent(RentArgs{"vastai", offers[0].ID, offers[0].GPU, "training", "pytorch/pytorch:tag", 40, offers[0].Count})
+	id, e := s.rent(RentArgs{"vastai", offers[0].ID, offers[0].GPU, "training", "pytorch/pytorch:tag", 40, offers[0].Count, nil})
 	if e != nil || id != "101" || !strings.Contains(output.String(), "$0.840000/hour") || *calls != 3 {
 		t.Fatal("selected ask lost during grouped market refresh", output.String(), *calls, e)
 	}
@@ -313,7 +335,7 @@ func TestChangedQuoteIsRejectedBeforeAllocation(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			s := testStore(t)
 			calls := mockVastQuotes(t, s, change)
-			if _, e := s.rent(RentArgs{"vastai", "1", "5090", "training", "pytorch/pytorch:tag", 40, 1}); e == nil || !strings.Contains(e.Error(), "changed") {
+			if _, e := s.rent(RentArgs{"vastai", "1", "5090", "training", "pytorch/pytorch:tag", 40, 1, nil}); e == nil || !strings.Contains(e.Error(), "changed") {
 				t.Fatal(e)
 			}
 			if *calls != 2 {

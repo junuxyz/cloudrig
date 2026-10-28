@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -81,8 +80,6 @@ func (s *Store) finishConnection(i Instance) error {
 	return writeJSON(filepath.Join(s.Root, "resources.json"), db)
 }
 
-// The agent proxy permits only read/sign/session-binding requests. OpenSSH enforces destination
-// and remote-user constraints cryptographically; no signing implementation lives in this binary.
 func frame(r io.Reader) ([]byte, error) {
 	var hdr [4]byte
 	if _, e := io.ReadFull(r, hdr[:]); e != nil {
@@ -110,11 +107,13 @@ func permittedFrame(b []byte) bool {
 			return false
 		}
 		n := int(binary.BigEndian.Uint32(b[5:9]))
-		return n == len("session-bind@openssh.com") && len(b) >= 9+n && string(b[9:9+n]) == "session-bind@openssh.com"
+		return n == len("session-bind@openssh.com") && len(b) >= 9+n &&
+			string(b[9:9+n]) == "session-bind@openssh.com"
 	}
 	return false
 }
 
+// OpenSSH checks signatures against the approved host key and remote user.
 func (s *Store) proxy(c *net.UnixConn, rec Record, upstream string) {
 	defer c.Close()
 	if uid, e := peerUID(c); e != nil || uid != uint32(s.Owner.UID) && uid != 0 {
@@ -132,7 +131,10 @@ func (s *Store) proxy(c *net.UnixConn, rec Record, upstream string) {
 			return
 		}
 		current, approvalError := s.approved(rec.Provider, rec.ID)
-		if approvalError != nil || current.Connecting || current.Key != rec.Key || current.Host != rec.Host || current.Port != rec.Port || current.User != rec.User || current.HostKey != rec.HostKey {
+		if approvalError != nil || current.Connecting || current.Key != rec.Key || current.Host != rec.Host ||
+			current.Port != rec.Port ||
+			current.User != rec.User ||
+			current.HostKey != rec.HostKey {
 			return
 		}
 		if !permittedFrame(b) {
@@ -160,7 +162,13 @@ func systemCommand(path string, args ...string) *exec.Cmd {
 }
 
 func validEndpoint(rec Record) bool {
-	return idPattern.MatchString(rec.ID) && validProvider(rec.Provider) && rec.Port > 0 && rec.Port <= 65535 && regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`).MatchString(rec.User) && safeLabel(rec.Host) && !strings.Contains(rec.Host, "%") && (net.ParseIP(rec.Host) != nil || regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`).MatchString(rec.Host))
+	if !idPattern.MatchString(rec.ID) || !validProvider(rec.Provider) || rec.Port < 1 || rec.Port > 65535 {
+		return false
+	}
+	if !sshUserPattern.MatchString(rec.User) || !safeLabel(rec.Host) || strings.Contains(rec.Host, "%") {
+		return false
+	}
+	return net.ParseIP(rec.Host) != nil || hostPattern.MatchString(rec.Host)
 }
 
 func (s *Store) startSigner(rec Record) (func(), error) {
@@ -185,7 +193,7 @@ func (s *Store) startSigner(rec Record) (func(), error) {
 	if e = atomic(filepath.Join(dir, "known_hosts"), known, 0644); e != nil {
 		return nil, e
 	}
-	internal := filepath.Join(s.Root, filepath.Base(publicDir(s.Run, rec.Provider, rec.ID))+".sock")
+	internal := filepath.Join(s.Root, filepath.Base(dir)+".sock")
 	os.Remove(internal)
 	cmd := systemCommand("/usr/bin/ssh-agent", "-D", "-a", internal)
 	if e = cmd.Start(); e != nil {
@@ -263,7 +271,7 @@ func (s *Store) pin(rec *Record) error {
 }
 
 func (s *Store) approve(provider, id string) error {
-	if !validProvider(provider) || !idPattern.MatchString(id) {
+	if !validProvider(provider) {
 		return errors.New("invalid resource")
 	}
 	i, e := s.instance(provider, id)

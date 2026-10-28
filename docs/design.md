@@ -1,26 +1,32 @@
-# CLI experience
+# Terminal interface
 
-`crig` is the global ordinary-user client. It remembers a default provider, shows searchable
-GPU offers and rented instances, and uses one restrained terminal interface: neutral grays with a
-peach accent.
+`crig` opens the dashboard. First use runs account setup before opening it.
+Project review uses a full-screen browser, with `--numbered` as an alternative.
 
-The interface is built from layered surfaces rather than boxes: background, surface (sidebar, status
-bar, dialogs), and panel (inputs, quote). Focus is shown with a left accent bar. GPU offers and Instances
-are tabs (`1`, `2`). A sidebar inspects the selected row and collapses into a summary strip below
-104 columns. Dialogs are keyboard lists with hotkeys. Delete has no single-key shortcut. `ctrl+p`
-opens a command palette for views, sorting, refresh, and themes (`cloudrig`, `cloudrig-mint`,
-`cloudrig-light`, and Textual's built-ins). A theme choice is saved to the ordinary config file,
-except in demo mode. `?` lists every shortcut. While data loads, or when nothing matches, a block
-wordmark splash fills the table area with the next useful keys. The sorted column is marked in the
-header.
+## Controls
 
-The main flow is search → review → fresh sudo → protected quote → rent → connect.
-Selecting a result never spends money. `/` filters, `s` sorts, `r` refreshes, and Escape cancels.
+| Key | Action |
+| --- | --- |
+| `1`, `2` | Switch between offers and instances. |
+| Arrows or `j`/`k` | Move between rows. |
+| Enter | Review a rental or choose an instance action. |
+| `/`, `s`, `r` | Filter, sort offers, or refresh. |
+| `g` | View setup progress. |
+| Escape | Close a dialog or clear the filter. |
+| `?`, `ctrl+p` | Open keyboard help or commands and themes. |
 
-Search and approved work stay unprivileged. The protected native component owns provider tokens,
-private keys, allocation decisions, and connection grants. Client text and client confirmation are
-not spending authority. A modified agent-facing client cannot turn a read operation into a rent.
+Delete has no single-key shortcut. Checkout validates name, disk, and image before returning a
+rental. Sudo authentication happens outside the UI; the helper then runs without another prompt.
+Actions return to the dashboard afterward.
+Provider errors stay visible, and stale prices cannot start checkout.
 
-After approval, ordinary native SSH, VS Code, rsync, and remote agents use a public key and a
-purpose-limited signing socket. There are no personal-key imports, keychain fallbacks, or passwords
-forwarded through an agent. The human handles privileged operations in a trusted terminal.
+## Progress and layout
+
+Setup runs in the background. Its current step and elapsed time appear above the table.
+View setup or `g` opens recorded events and the log location. Done or Escape returns to browsing.
+Ready and failed states stay visible. Closing the dashboard does not cancel setup.
+Progress describes saved setup checks, not continuous GPU health or a predicted finish time.
+
+The detail pane shows the selected instance or offer. Below 104 columns it becomes a summary
+under the table. Themes persist outside demo mode. Project review shows requirements, complete
+compute-plus-disk quotes, upload exclusions, and the dependency command.

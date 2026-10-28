@@ -17,8 +17,8 @@ from cloudrig.connections import (
     sync_command,
     wait_ready,
 )
-from cloudrig.models import CrigError, Rental, instance_id
-from cloudrig.project import Binding, Phase, Project, save_receipt
+from cloudrig.models import CrigError, Rental, RentalNotSubmitted, instance_id
+from cloudrig.project import Binding, Phase, Project, forget_receipt, save_receipt
 from cloudrig.security import child_environment
 from cloudrig.terminal import console, waiting
 
@@ -58,7 +58,11 @@ def launch(project: Project, api, target: Rental | Binding, options: Options) ->
     if isinstance(target, Rental):
         # Persist uncertainty before making a paid request. Bind its ID before waiting for SSH.
         save_receipt(project, Binding(Phase.SUBMITTING, offer=target.offer.id))
-        identifier = instance_id(api.rent(target))
+        try:
+            identifier = instance_id(api.rent(target))
+        except RentalNotSubmitted:
+            forget_receipt(project)
+            raise
         binding = save_receipt(project, Binding(Phase.PREPARING, id=identifier, offer=target.offer.id))
     else:
         binding = target
@@ -90,7 +94,9 @@ def launch(project: Project, api, target: Rental | Binding, options: Options) ->
                 setup=options.setup,
             )
         )
-        console.print(f"Preparing {project.name} in the background. Check: crig status", markup=False)
+        console.print(
+            f"Preparing {project.name} in the background. Open crig to follow progress.", markup=False
+        )
         if options.open_editor:
             console.print("VS Code will open when setup finishes.")
         else:
@@ -122,7 +128,7 @@ def prepare(
     if binding.needs_upload:
         if progress:
             progress("Uploading the project")
-        console.print("Uploading the project. Credentials, .git, .venv, and caches are excluded.")
+        console.print("Uploading the project with Git ignores and Cloudrig's filename exclusions.")
         run(ssh_command(name, f"mkdir -p -- {shlex.quote(project.remote)}"))
         run(sync_command(item, str(project.root) + "/", project.remote + "/", True))
         binding = save_receipt(project, replace(binding, phase=Phase.UPLOADED))
@@ -134,18 +140,17 @@ def prepare(
         run(ssh_command(name, f"cd {shlex.quote(project.remote)} && {shlex.join(setup)}"))
         python = ".venv/bin/python" if setup[0] == "uv" else "python"
         binding = save_receipt(project, replace(binding, setup_complete=True, python=python))
-    probe = (
-        "import torch; "
-        "assert torch.cuda.is_available(), 'PyTorch cannot access CUDA'; "
-        "print(torch.cuda.get_device_name(0))"
-    )
-    console.print("Checking the NVIDIA driver and PyTorch CUDA access…")
+    console.print("Checking the NVIDIA driver…")
     if progress:
-        progress("Checking CUDA")
-    command = (
-        f"cd {shlex.quote(project.remote)} && nvidia-smi -L && "
-        f"{shlex.quote(binding.python)} -c {shlex.quote(probe)}"
-    )
+        progress("Checking the GPU")
+    command = f"cd {shlex.quote(project.remote)} && nvidia-smi -L"
+    if project.framework == "pytorch":
+        probe = (
+            "import torch; "
+            "assert torch.cuda.is_available(), 'PyTorch cannot access CUDA'; "
+            "print(torch.cuda.get_device_name(0))"
+        )
+        command += f" && {shlex.quote(binding.python)} -c {shlex.quote(probe)}"
     run(ssh_command(name, command))
     binding = save_receipt(project, replace(binding, phase=Phase.READY))
     if options.open_editor:

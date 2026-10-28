@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -19,6 +20,8 @@ type Store struct {
 	Client    *http.Client
 	Base      map[string]string
 	Output    io.Writer
+	readMu    *sync.Mutex
+	reads     map[string]instanceRead
 }
 
 func newStore(root, run string, cfg Config) *Store {
@@ -33,11 +36,13 @@ func newStore(root, run string, cfg Config) *Store {
 		},
 		Base:   map[string]string{"vastai": "https://console.vast.ai", "runpod": "https://api.runpod.io"},
 		Output: os.Stderr,
+		reads:  make(map[string]instanceRead),
+		readMu: &sync.Mutex{},
 	}
 }
 
 func (s *Store) readDB() (DB, error) {
-	db := DB{map[string]Record{}, map[string]bool{}}
+	db := DB{Records: map[string]Record{}, Pending: map[string]bool{}, Requests: map[string]Record{}}
 	data, e := os.ReadFile(filepath.Join(s.Root, "resources.json"))
 	if os.IsNotExist(e) {
 		return db, nil
@@ -51,6 +56,9 @@ func (s *Store) readDB() (DB, error) {
 	}
 	if db.Pending == nil {
 		db.Pending = map[string]bool{}
+	}
+	if db.Requests == nil {
+		db.Requests = map[string]Record{}
 	}
 	return db, e
 }

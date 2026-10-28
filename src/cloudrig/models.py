@@ -5,7 +5,17 @@ from dataclasses import asdict, dataclass
 
 
 class CrigError(Exception):
-    """An actionable error safe to display without a traceback."""
+    """An error message the CLI can display without exposing credentials."""
+
+
+class RentalNotSubmitted(CrigError):
+    """The protected helper confirmed that no paid request was submitted."""
+
+
+class RateLimited(CrigError):
+    def __init__(self, seconds: int):
+        self.seconds = seconds
+        super().__init__(f"Provider is limiting requests. Waiting {seconds}s before checking again.")
 
 
 def safe_text(value: str) -> None:
@@ -14,12 +24,12 @@ def safe_text(value: str) -> None:
         or len(value) > 1024
         or any(unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in value)
     ):
-        raise CrigError("Cloud metadata contains invalid text or terminal control characters.")
+        raise CrigError("Use text with at most 1024 characters and no terminal control characters.")
 
 
 def instance_id(value: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", value):
-        raise CrigError("Provider returned an invalid instance ID.")
+        raise CrigError("Invalid instance ID. Use up to 100 letters, numbers, hyphens, or underscores.")
     return value
 
 
@@ -31,7 +41,8 @@ def number(value: float, *, positive: bool = False) -> None:
         or value < 0
         or (positive and value == 0)
     ):
-        raise CrigError("Provider returned an invalid price, capacity, or quantity. Refresh before renting.")
+        limit = "greater than zero" if positive else "zero or greater"
+        raise CrigError(f"Use a finite number {limit}.")
 
 
 def provider_name(value: str) -> None:
@@ -56,12 +67,14 @@ class Offer:
 
     def __post_init__(self):
         provider_name(self.provider)
-        for value in (self.id, self.gpu, self.region, self.cloud, self.availability):
+        for value in (self.gpu, self.region, self.cloud, self.availability):
             safe_text(value)
         if self.provider == "vastai":
             instance_id(self.id)
-        elif len(self.id.split("|")) != 3:
-            raise CrigError("Invalid RunPod offer identifier.")
+        else:
+            safe_text(self.id)
+            if len(self.id.split("|")) != 3:
+                raise CrigError("Invalid RunPod offer ID.")
         if not isinstance(self.count, int) or isinstance(self.count, bool) or self.count < 1:
             raise CrigError("Invalid GPU count.")
         number(self.vram, positive=True)
@@ -128,12 +141,15 @@ class Rental:
 
     def __post_init__(self):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,62}", self.name):
-            raise CrigError("Invalid workspace name.")
+            raise CrigError(
+                "Start the name with a letter or number. "
+                "Use up to 63 letters, numbers, hyphens, or underscores."
+            )
         if isinstance(self.disk, bool) or not isinstance(self.disk, int) or not 1 <= self.disk <= 100000:
-            raise CrigError("Invalid container disk size.")
+            raise CrigError("Choose a disk size between 1 and 100000 GB.")
         safe_text(self.image)
         if not self.image or any(c.isspace() for c in self.image):
-            raise CrigError("Invalid container image.")
+            raise CrigError("Enter a container image without spaces.")
 
 
 @dataclass(frozen=True)

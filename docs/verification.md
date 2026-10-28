@@ -1,127 +1,39 @@
-# Verification status
+# Verification
 
-Current architecture: 0.2.2, native privileged helper and unprivileged Python client.
-
-## Architecture cleanup
-
-The [maintained suite](architecture.md) passes 98 Python cases, the native race suite, `go vet`,
-and Ruff. Duplicate tests and the source-patching mutation harness have been removed.
-Native macOS and Linux amd64 builds and the
-Python package build succeed. A read-only demo command also runs from the built wheel.
-These tests performed no privileged installation, paid rental, or live provider mutation.
-
-## Background setup
-
-Real child-process tests check that setup starts in a separate session, repeated background requests
-reuse one process, and ready or failed results reach the saved status. Project cases verify the child
-waits for the original command to release the project lock and reads the recorded allocation.
-The child provider rejects any rental or paid start. Command tests check that Cloudrig saves the
-allocation before starting setup. Status reads need no provider connection.
-
-Tests replace editor opening and notification delivery with local callbacks. They verify notification
-text passes as data and delivery failures do not fail setup. Actual desktop notification display and
-VS Code connection to a paid GPU have not been checked for this change.
-
-## Remote tool setup
-
-The packaged bootstrap completed on a clean Ubuntu 24.04 ARM64 Docker container, installing
-rsync 3.5.1 and uv 0.13.6. A second run left the installation log unchanged, verifying the
-already-prepared path. The built Python wheel includes the same script.
-
-Custom startup tests run Bash arrays through a test program that acts like SSH, verify that edits change
-the next execution, and inspect remote error logs. CLI tests check export without account setup,
-failure before provider access for a missing file, and project paths with command-line overrides.
-
-On emulated Ubuntu AMD64, rsync compiled and installed, but uv exited with a QEMU segmentation
-fault. The official uv installer and `uv --version` reproduce that fault independently of Cloudrig.
-Native AMD64 GPU execution remains unverified; no paid instance was rented for these checks.
-
-The macOS runtime fix checks the actual protected parent directory and verifies that an unsafe
-ancestor error identifies its path and permissions. A native SSH test republishes an existing grant
-under a new runtime directory without changing its allocation journal. Installer tests exercise
-asynchronous launchd unloading and its timeout before allowing bootstrap. The user attempted a
-privileged reinstall; logs confirmed that immediate bootstrap raced with the previous service's
-shutdown. The corrected installer has not yet been rerun with root authentication.
-
-## Reliability test execution
-
-The [plan](test-plan.md) was written before the new tests. Tests exercise real local HTTP/Unix
-servers, persistent files, independent processes, native OpenSSH clients/agents, and SSH test
-servers. Provider servers use synthetic credentials and local endpoints only.
-
-Earlier reliability campaign on macOS:
-
-- Python: 49 tests pass. Parallel subprocesses preserve every committed preference; a failed
-  atomic rename leaves the original state readable and removes temporary debris.
-- Native: 36 top-level tests pass, plus parameterized subtests and two fuzz seed suites. The
-  complete native suite passed three shuffled runs under the race detector in 24.7 seconds.
-- Native statement coverage is 72.3%. This is diagnostic, not the acceptance criterion; unexecuted
-  root dispatch, human-terminal secret entry, and installed sudo policy remain explicit limits.
-- Agent-frame fuzzing ran 454,155 inputs over 10 seconds. Instance parsing ran 401,284 inputs
-  over 10 seconds. Both used two workers and completed without a failing input.
-
-The tests exposed and now prevent:
-
-1. Duplicate allocations when a known rental was absent from a stale provider list, including
-   concurrent brokers and attempts after failed deletion.
-2. Underquoted RunPod starts caused by missing, boolean, fractional, or nonpositive GPU counts.
-3. A credential-login panic caused by a regex repetition unsupported by Go's regex engine.
-
-Service lifecycle tests additionally cover revoke/regrant reconciliation and removal of actual
-native-agent/API sockets after context cancellation or corrupt authority state. The service now
-handles SIGTERM/interrupt through that cancellation path. The installed OS service has not run.
-
-Reproduce the checks:
+From the repository root:
 
 ```sh
+uv sync --locked --group dev
 uv run pytest -q
-(cd admin && go test -race -count=3 -shuffle=on -timeout=60s ./...)
-(cd admin && go test -run='^$' -fuzz='^FuzzAgentFrames$' -fuzztime=10s -parallel=2 -timeout=30s)
-(cd admin && go test -run='^$' -fuzz='^FuzzProviderInstance$' -fuzztime=10s -parallel=2 -timeout=30s)
+uv run ruff check src tests scripts/preview.py
+(cd admin && go test -race ./...)
+(cd admin && go vet ./...)
+./scripts/build-admin.sh
+uv build
 ```
 
-Recovery tests cover failed requests and broker restarts on a running OS. They do not simulate
-power loss or storage-controller faults. No root/sudo policy was changed to obtain these results.
+Tests use temporary files, synthetic credentials, local servers, separate workers, and real
+OpenSSH and rsync tools. They cover recovery, prices, credential replacement, constrained signing,
+uploads, reconnects, preparation, and terminal controls. They do not rent GPUs or install a root service.
 
-## Checked without root
+Platform wheels bundle the native helper, installation scripts, and file hashes. Local tests check
+bundle integrity, installation cancellation, service updates, and preservation of account setup.
+The release workflow builds four target wheels and prepares signed GitHub attestations.
+Hosted builds and attestation verification have not been run from this checkout.
 
-- Python client/UI suite: onboarding, provider choice, demo safety, fixed fresh-sudo invocation,
-  no environment credential fallback, public-key-only SSH configuration, rsync round trips,
-  unsafe input handling, and terminal interactions at 80×24 and 120×36.
-- Native Go suite with race detection: ordinary API cannot rent/start/delete/modify keys or execute
-  local commands; unknown JSON fields rejected; caller identity checked with kernel peer credentials.
-- Provider secrets stay in fake root-role stores during tests; instance environment secrets and
-  raw provider error bodies are absent from normal responses. Redirects do not forward credentials.
-- Actual OpenSSH agent/client/server tests use generated fixture keys only. An approved SSH login
-  succeeds through the proxy. Key import/deletion and unbound signature requests are rejected.
-- Native provider quote tests confirm actual GPU count, disk cost, human cancellation, and price
-  recheck before submission. Root request journals retain ambiguous requests across unrelated writes.
-- Build and sudoers syntax checks. Native helper refuses direct execution by an ordinary UID.
-- Privileged operations use fresh sudo authentication without an additional typed approval step.
-  Fixture rentals run without terminal confirmation and retain provider-derived quotes and price
-  rechecks. The client disconnects standard input from sudo.
-- Linux amd64 cross-compilation succeeds. Linux service installation/runtime has not been tested.
-- Python dependency audit and native `govulncheck` report no known vulnerabilities in the checked
-  dependencies. These checks are not a full security audit.
+## Remaining checks
 
-The Go suite uses temporary stores and the current test UID to exercise its logic/protocol. That
-is not a claim of root memory/file isolation on an already deployed system.
+- Install, update, and uninstall on macOS and Linux. Check ownership, signing access, and sudo policy.
+- Run `crig self-test` on the installed system; test-user fixtures do not prove root isolation.
+- Complete a real rental, upload, dependency install, GPU check, editor connection, output pull,
+  stop, and deletion. Confirm resource state and charges in the provider console.
+- Verify desktop notification display.
 
-## Required after human root installation
+Installer tests run the full script against temporary paths and simulated macOS/Linux services.
+They check restoration after failed file replacement, policy validation, service startup, and
+self-test. They also check retained backups after failed restoration and recovery after a killed
+installer. Provider tests check price changes before submission.
 
-The installer and `crig self-test` run the real installed checks:
-
-1. The native helper, owner configuration, credential directory, and service are root-owned.
-2. A process actually dropped to the ordinary UID cannot read a root-only fixture file.
-3. The ordinary UID cannot validate sudo non-interactively with the installed timestamp policy.
-4. Review the effective sudo policy for all other passwordless or broad-root entry points.
-
-This privileged installation has not been run by the development agent. No actual root-owned
-provider credential has been stored and no live paid instance has been created or changed.
-
-## External contract evidence
-
-The initial development checked public Vast GPU catalog/offer reads, its storage cost fields,
-RunPod's official v2 OpenAPI request schema, default image manifest availability, and official SSH
-key APIs. Live authenticated rent/start/delete and real remote VS Code/rsync/agent execution still
-need a funded provider account and explicit human approval. Fixtures do not prove live billing.
+Mocked responses do not prove live API compatibility. Recovery tests cover process and request
+failures, not power loss or disk faults.
+See [security.md](security.md) and the [test plan](test-plan.md).

@@ -61,7 +61,18 @@ func TestUnixAPIEnforcesAuthorityAtTheWire(t *testing.T) {
 		}
 		switch {
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v2/pods"):
-			json.NewEncoder(w).Encode(map[string]any{"pods": []any{map[string]any{"id": "pod1", "name": "training", "gpu": map[string]any{"id": "5090", "count": 2}, "cost": 0.8, "status": "RUNNING", "env": map[string]string{"KEY": "PROVIDER_SECRET"}}}})
+			json.NewEncoder(w).Encode(map[string]any{
+				"pods": []any{
+					map[string]any{
+						"id":     "pod1",
+						"name":   "training",
+						"gpu":    map[string]any{"id": "5090", "count": 2},
+						"cost":   0.8,
+						"status": "RUNNING",
+						"env":    map[string]string{"KEY": "PROVIDER_SECRET"},
+					},
+				},
+			})
 		case r.Method == "POST" && r.URL.Path == "/v2/pods/pod1/action":
 			var body map[string]string
 			if e := json.NewDecoder(r.Body).Decode(&body); e != nil || body["action"] != "stop" {
@@ -76,13 +87,16 @@ func TestUnixAPIEnforcesAuthorityAtTheWire(t *testing.T) {
 	}))
 	defer server.Close()
 	s.Base["runpod"] = server.URL
-	if e := writeJSON(filepath.Join(s.Root, "resources.json"), DB{Records: map[string]Record{"runpod-pod1": {Provider: "runpod", ID: "pod1", Key: "private-path-not-for-clients"}}}); e != nil {
+	if e := writeJSON(filepath.Join(s.Root, "resources.json"), DB{
+		Records: map[string]Record{"runpod-pod1": {Provider: "runpod", ID: "pod1", Key: "private-path-not-for-clients"}},
+	}); e != nil {
 		t.Fatal(e)
 	}
 	path := startTestAPI(t, s)
 	reply := callTestAPI(t, path, "{\"op\":\"instances\",\"provider\":\"runpod\"}")
 	rows, ok := reply["data"].([]any)
-	if !ok || len(rows) != 1 || object(rows[0])["name"] != "training" || object(rows[0])["count"] != float64(2) {
+	if !ok || len(rows) != 1 || object(rows[0])["name"] != "training" ||
+		object(rows[0])["count"] != float64(2) {
 		t.Fatal("ordinary reads broken", reply)
 	}
 	raw, _ := json.Marshal(reply)
@@ -91,13 +105,35 @@ func TestUnixAPIEnforcesAuthorityAtTheWire(t *testing.T) {
 			t.Fatal("wire credential leak", secret)
 		}
 	}
-	for _, op := range []string{"rent", "start", "restart", "destroy", "approve", "login", "resize", "payment", "exec", "batch", "approve_all", "register_key", "read_file", "sign"} {
+	for _, op := range []string{
+		"rent",
+		"start",
+		"restart",
+		"destroy",
+		"approve",
+		"recover",
+		"login",
+		"resize",
+		"payment",
+		"exec",
+		"batch",
+		"approve_all",
+		"register_key",
+		"read_file",
+		"sign",
+	} {
 		body, _ := json.Marshal(map[string]any{"op": op, "provider": "runpod", "id": "pod1"})
 		if result := callTestAPI(t, path, string(body)); result["error"] == nil {
 			t.Errorf("ordinary wire operation %s was accepted: %#v", op, result)
 		}
 	}
-	for _, bad := range []string{"{", "[]", "null", "{\"op\":\"instances\",\"provider\":\"runpod\",\"api_url\":\"https://evil\"}", "{\"op\":\"stop\",\"provider\":\"runpod\",\"id\":\"" + strings.Repeat("X", 17000) + "\"}"} {
+	for _, bad := range []string{
+		"{",
+		"[]",
+		"null",
+		"{\"op\":\"instances\",\"provider\":\"runpod\",\"api_url\":\"https://evil\"}",
+		"{\"op\":\"stop\",\"provider\":\"runpod\",\"id\":\"" + strings.Repeat("X", 17000) + "\"}",
+	} {
 		result, e := exchangeTestAPI(path, bad)
 		if timeout, ok := e.(net.Error); ok && timeout.Timeout() {
 			t.Fatal("malformed request hung instead of being refused", e)
@@ -153,7 +189,10 @@ func TestProviderPaginationReturnsAllRowsAndRejectsCycles(t *testing.T) {
 						next = ""
 					}
 				}
-				json.NewEncoder(w).Encode(map[string]any{"pods": []any{map[string]any{"id": id, "name": id, "cost": cost}}, "pagination": map[string]string{"nextCursor": next}})
+				json.NewEncoder(w).Encode(map[string]any{
+					"pods":       []any{map[string]any{"id": id, "name": id, "cost": cost}},
+					"pagination": map[string]string{"nextCursor": next},
+				})
 			}))
 			defer server.Close()
 			s.Base["runpod"] = server.URL
@@ -164,7 +203,9 @@ func TestProviderPaginationReturnsAllRowsAndRejectsCycles(t *testing.T) {
 				}
 				return
 			}
-			if e != nil || len(rows) != 2 || rows[0].ID != "first" || rows[1].ID != "second" || rows[0].Hourly != 0.5 || rows[1].Hourly != 0.7 {
+			if e != nil || len(rows) != 2 || rows[0].ID != "first" || rows[1].ID != "second" ||
+				rows[0].Hourly != 0.5 ||
+				rows[1].Hourly != 0.7 {
 				t.Fatal("incomplete provider pagination", rows, e)
 			}
 		})
@@ -178,9 +219,20 @@ func TestRunPodStartRequiresVerifiableGPUCountAndExactCloudPrice(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/v2/pods/pod1":
-					json.NewEncoder(w).Encode(map[string]any{"id": "pod1", "name": "training", "cloud": "SECURE", "gpu": map[string]any{"id": "5090", "count": count}, "cost": 1.8})
+					json.NewEncoder(w).Encode(map[string]any{
+						"id":    "pod1",
+						"name":  "training",
+						"cloud": "SECURE",
+						"gpu":   map[string]any{"id": "5090", "count": count},
+						"cost":  1.8,
+					})
 				case "/v2/catalog/gpus":
-					json.NewEncoder(w).Encode(map[string]any{"gpus": []any{map[string]any{"id": "other", "price": map[string]float64{"secure": 0.01}}, map[string]any{"id": "5090", "price": map[string]float64{"secure": 0.9, "community": 0.3}}}})
+					json.NewEncoder(w).Encode(map[string]any{
+						"gpus": []any{
+							map[string]any{"id": "other", "price": map[string]float64{"secure": 0.01}},
+							map[string]any{"id": "5090", "price": map[string]float64{"secure": 0.9, "community": 0.3}},
+						},
+					})
 				case "/v2/pods/pod1/action":
 					var body map[string]string
 					json.NewDecoder(r.Body).Decode(&body)
@@ -245,7 +297,8 @@ func FuzzAgentFrames(f *testing.F) {
 			t.Fatal("accepted missing length")
 		}
 		size := int(binary.BigEndian.Uint32(input[:4]))
-		if size < 1 || size > 262144 || len(b) != size+4 || len(input) < size+4 || string(b) != string(input[:size+4]) {
+		if size < 1 || size > 262144 || len(b) != size+4 || len(input) < size+4 ||
+			string(b) != string(input[:size+4]) {
 			t.Fatal("accepted corrupt frame")
 		}
 		if permittedFrame(b) && b[4] != 11 && b[4] != 13 && b[4] != 27 {
@@ -268,7 +321,8 @@ func FuzzProviderInstance(f *testing.F) {
 		if e != nil {
 			return
 		}
-		if len(i.ID) < 1 || len(i.ID) > 100 || i.Count < 1 || i.Hourly < 0 || math.IsNaN(i.Hourly) || math.IsInf(i.Hourly, 0) {
+		if len(i.ID) < 1 || len(i.ID) > 100 || i.Count < 1 || i.Hourly < 0 || math.IsNaN(i.Hourly) ||
+			math.IsInf(i.Hourly, 0) {
 			t.Fatal("accepted unsafe instance")
 		}
 		for _, c := range i.ID {

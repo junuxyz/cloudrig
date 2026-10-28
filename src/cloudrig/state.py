@@ -66,13 +66,6 @@ def update(**changes) -> dict:
         return data
 
 
-def provider_or_error() -> str:
-    provider = load().get("provider")
-    if provider not in PROVIDERS:
-        raise CrigError("Choose your cloud first: crig --set vastai  or  crig --set runpod")
-    return provider
-
-
 def remember_instance(provider: str, identifier: str) -> None:
     with state_lock():
         data = load()

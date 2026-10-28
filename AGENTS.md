@@ -1,20 +1,22 @@
 # Working on Cloudrig
 
-Read [docs/architecture.md](docs/architecture.md) before changing responsibilities or persistence.
+For user onboarding, follow [docs/agents.md](docs/agents.md).
 
-- Keep the CLI, workspace workflow, and privileged helper responsibilities explicit.
-- Prefer direct functions and small data types. Add an abstraction when existing callers need it.
-- Delete unused paths and parameters after migrating callers. Avoid compatibility wrappers for internal APIs.
-- Validate configuration, provider responses, and privileged requests at their boundaries. Trust validated
-  immutable values inside the application instead of repeating the same checks.
-- Keep defaults in one place. Platform paths and provider contracts are explicit constants; project choices
-  belong in configuration. Do not silently substitute another provider, instance, or price.
-- Every guard should address a concrete failure. Keep protections for paid requests, credentials, and file
-  transfers. Avoid speculative fallbacks, blanket retries, and checks for impossible internal states.
-- Preserve instance receipts on ambiguous paid requests. Never turn a setup failure into another rental.
-- Test behavior through commands and real tool boundaries where practical. Test doubles must not replace
-  the policy being tested. Do not add tests that merely repeat the implementation.
-- Leave unrelated working-tree edits intact. Use descriptive branches without a `codex/` prefix.
+Read [docs/architecture.md](docs/architecture.md) before changing responsibilities or saved state.
 
-Run `uv run pytest -q`, `uv run ruff check src tests`, and `go test -race ./...` plus `go vet ./...`
-from `admin/` for changes spanning both executables. See the architecture document for build commands.
+- Keep CLI, project workflow, and root-helper responsibilities explicit.
+- Prefer direct functions and small data types. Add abstractions when implemented callers need them.
+- Migrate callers, then delete unused paths and parameters. Do not keep wrappers for old internal APIs.
+- Validate configuration, provider responses, and privileged requests where they enter the application.
+  Trust validated immutable values inside the application instead of checking them again.
+- Keep defaults in one place. Use constants for platform paths and provider contracts, and configuration
+  for project choices. Never silently substitute another provider, instance, or price.
+- Tie each guard to a concrete failure. Keep checks for paid requests, credentials, and transfers.
+  Avoid speculative fallbacks, blanket retries, and guards for impossible internal states.
+- Preserve receipts when a paid request's outcome is unknown. A setup failure must never rent another GPU.
+- Test behavior through commands and actual tool calls where practical. A test double must not replace
+  the policy under test. Do not add tests that repeat the implementation without checking behavior.
+- Preserve unrelated working-tree edits. Use descriptive branch names without a `codex/` prefix.
+
+For changes to both executables, run `uv run pytest -q`, `uv run ruff check src tests`, and, from
+`admin/`, `go test -race ./...` and `go vet ./...`. Build commands are in [docs/verification.md](docs/verification.md).

@@ -5,9 +5,14 @@ import (
 	"regexp"
 )
 
-var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$`)
-
-var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+var (
+	idPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$`)
+	namePattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+	imagePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./:@-]{0,511}$`)
+	tokenPattern   = regexp.MustCompile(`^[!-~]+$`)
+	sshUserPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+	hostPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
+)
 
 var errDenied = errors.New("operation requires fresh sudo authorization")
 
@@ -31,8 +36,9 @@ type Record struct {
 }
 
 type DB struct {
-	Records map[string]Record `json:"records"`
-	Pending map[string]bool   `json:"pending"`
+	Records  map[string]Record `json:"records"`
+	Pending  map[string]bool   `json:"pending"`
+	Requests map[string]Record `json:"requests,omitempty"`
 }
 
 type Request struct {
@@ -82,4 +88,5 @@ type Instance struct {
 type RentArgs struct {
 	Provider, ID, Query, Name, Image string
 	Disk, Count                      int
+	MaxHourly                        *float64
 }

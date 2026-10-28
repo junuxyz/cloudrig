@@ -16,7 +16,7 @@ import (
 
 const stateRoot = "/var/db/cloudrig"
 
-// This test is run after real root installation, not simulated by the unprivileged unit suite.
+// selfTest checks credential isolation and the running service protocol.
 func (s *Store) selfTest() error {
 	probe := filepath.Join(s.Root, ".permission-probe")
 	if e := atomic(probe, []byte("not-a-real-credential"), 0600); e != nil {
@@ -28,12 +28,17 @@ func (s *Store) selfTest() error {
 	if e := command.Run(); e == nil {
 		return errors.New("credential isolation failed: ordinary user could read a root-only file")
 	}
-	validate := systemCommand("/usr/bin/sudo", "-n", "-v")
+
+	helper, e := os.Executable()
+	if e != nil {
+		return e
+	}
+	validate := systemCommand("/usr/bin/sudo", "-n", "--", helper, "auth-check")
 	validate.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(s.Owner.UID), Gid: uint32(s.Owner.GID)}}
 	if e := validate.Run(); e == nil {
-		return errors.New("sudo can be validated non-interactively; disable passwordless grants and credential caching")
+		return errors.New("Cloudrig helper can run without authentication; check its sudo policy")
 	}
-	return nil
+	return s.checkService()
 }
 
 func main() {
@@ -44,7 +49,7 @@ func main() {
 	invokingUID := os.Getenv("SUDO_UID")
 	os.Clearenv()
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: cloudrig-admin daemon|login|rent|approve|start|destroy")
+		fmt.Fprintln(os.Stderr, "usage: cloudrig-admin daemon|login|rent|approve|start|destroy|recover|self-test")
 		os.Exit(1)
 	}
 	var cfg Config
@@ -76,6 +81,10 @@ func main() {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		e = s.daemon(ctx)
+	case "auth-check":
+		if len(args) != 0 {
+			e = errors.New("auth-check takes no arguments")
+		}
 	case "self-test":
 		if len(args) != 0 {
 			e = errors.New("self-test takes no arguments")
@@ -96,14 +105,26 @@ func main() {
 		} else {
 			e = s.mutate(args[0], args[1], verb)
 		}
+	case "recover":
+		if len(args) != 3 {
+			e = errors.New("recover requires provider, rental name, and instance ID or '-'")
+		} else {
+			e = s.recoverRental(args[0], args[1], args[2])
+		}
 	case "rent":
-		if len(args) != 7 {
-			e = errors.New("invalid rental arguments")
+		if len(args) != 8 {
+			e = errors.New("rent requires provider, offer, GPU, name, image, disk, count, and reviewed hourly price")
 		} else {
 			disk, _ := strconv.Atoi(args[5])
 			count, _ := strconv.Atoi(args[6])
+			value, err := strconv.ParseFloat(args[7], 64)
+			if err != nil || !validNumber(value) {
+				e = errors.New("invalid reviewed price")
+				break
+			}
+			maximum := &value
 			var id string
-			id, e = s.rent(RentArgs{args[0], args[1], args[2], args[3], args[4], disk, count})
+			id, e = s.rent(RentArgs{args[0], args[1], args[2], args[3], args[4], disk, count, maximum})
 			output = map[string]string{"id": id}
 		}
 	default:

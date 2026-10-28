@@ -11,7 +11,7 @@ from cloudrig import state
 
 def test_parallel_process_updates_preserve_every_committed_preference(isolated_home):
     state.update(provider="vastai")
-    script = "import sys; from cloudrig import state; state.update(**{sys.argv[1]: sys.argv[2]})"
+    script = "import sys\nfrom cloudrig import state\nstate.update(**{sys.argv[1]: sys.argv[2]})\n"
 
     def update(index):
         return subprocess.run(

@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 
+from cloudrig.cli import main
 from cloudrig.connections import check_remote_rsync, check_rsync, install_alias, run, sync_command
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError
@@ -35,7 +36,9 @@ def test_child_tools_never_receive_secrets_or_signing_socket(monkeypatch, tmp_pa
         [
             sys.executable,
             "-c",
-            "import os,json,sys;open(sys.argv[1],'w').write(json.dumps(list(os.environ)))",
+            "import json\nimport os\nimport sys\n"
+            "from pathlib import Path\n"
+            "Path(sys.argv[1]).write_text(json.dumps(list(os.environ)))",
             str(output),
         ]
     )
@@ -98,8 +101,6 @@ def test_total_quote_overflow_is_refused():
 
 
 def test_unexpected_errors_do_not_dump_credentials(monkeypatch, capsys):
-    from cloudrig.cli import main
-
     monkeypatch.setattr(sys, "argv", ["crig", "--demo", "--rented"])
 
     def fail(_):

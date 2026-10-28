@@ -1,4 +1,4 @@
-"""Shared terminal output and local confirmations."""
+"""Print progress and ask for confirmation in the local terminal."""
 
 import sys
 from contextlib import contextmanager

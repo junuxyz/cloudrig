@@ -3,8 +3,9 @@
 package main
 
 import (
-	"golang.org/x/sys/unix"
 	"net"
+
+	"golang.org/x/sys/unix"
 )
 
 func peerUID(c *net.UnixConn) (uint32, error) {

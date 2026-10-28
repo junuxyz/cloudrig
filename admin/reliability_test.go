@@ -50,11 +50,34 @@ func newVastProvider(t *testing.T, s *Store) *vastProvider {
 		case r.URL.Path == "/api/v0/gpu_names/unique/":
 			write(map[string]any{"gpu_names": []string{"RTX 5090"}})
 		case r.URL.Path == "/api/v0/bundles/":
-			write(map[string]any{"offers": []any{map[string]any{"id": 1, "gpu_name": "RTX 5090", "num_gpus": 2, "gpu_ram": 32768, "dph_base": math.Float64frombits(f.price.Load()), "storage_cost": 0.72, "disk_space": 100, "geolocation": "US"}}})
+			write(map[string]any{
+				"offers": []any{
+					map[string]any{
+						"id":           1,
+						"gpu_name":     "RTX 5090",
+						"num_gpus":     2,
+						"gpu_ram":      32768,
+						"dph_base":     math.Float64frombits(f.price.Load()),
+						"storage_cost": 0.72,
+						"disk_space":   100,
+						"geolocation":  "US",
+					},
+				},
+			})
 		case r.URL.Path == "/api/v1/instances/":
 			rows := []any{}
 			if f.listed.Load() || f.endpointPort.Load() > 0 && f.allocations.Load() > 0 {
-				rows = append(rows, map[string]any{"id": 101, "label": "training", "gpu_name": "RTX 5090", "num_gpus": 2, "dph_base": math.Float64frombits(f.price.Load()), "dph_total": 0.84, "actual_status": "running", "ssh_host": "127.0.0.1", "ssh_port": f.endpointPort.Load()})
+				rows = append(rows, map[string]any{
+					"id":            101,
+					"label":         "training",
+					"gpu_name":      "RTX 5090",
+					"num_gpus":      2,
+					"dph_base":      math.Float64frombits(f.price.Load()),
+					"dph_total":     0.84,
+					"actual_status": "running",
+					"ssh_host":      "127.0.0.1",
+					"ssh_port":      f.endpointPort.Load(),
+				})
 			}
 			write(map[string]any{"instances": rows})
 		case r.Method == "PUT" && r.URL.Path == "/api/v0/asks/1/":
@@ -62,7 +85,8 @@ func newVastProvider(t *testing.T, s *Store) *vastProvider {
 			if e := json.NewDecoder(r.Body).Decode(&body); e != nil {
 				t.Error(e)
 			}
-			if body["disk"] != float64(40) || body["image"] != "pytorch/pytorch:tag" || body["client_id"] != "me" || body["runtype"] != "ssh_direct" {
+			if body["disk"] != float64(40) || body["image"] != "pytorch/pytorch:tag" || body["client_id"] != "me" ||
+				body["runtype"] != "ssh_direct" {
 				t.Errorf("invalid allocation payload: %#v", body)
 			}
 			db, e := s.readDB()
@@ -99,7 +123,8 @@ func newVastProvider(t *testing.T, s *Store) *vastProvider {
 				t.Error("key registration reached provider before allocation ID was recorded", e)
 			}
 			var body map[string]string
-			if e := json.NewDecoder(r.Body).Decode(&body); e != nil || !strings.HasPrefix(body["ssh_key"], "ssh-ed25519 ") || strings.Contains(body["ssh_key"], "PRIVATE") {
+			if e := json.NewDecoder(r.Body).Decode(&body); e != nil || !strings.HasPrefix(body["ssh_key"], "ssh-ed25519 ") ||
+				strings.Contains(body["ssh_key"], "PRIVATE") {
 				t.Error("not a public-key-only registration", body, e)
 			}
 			if f.endpointPort.Load() > 0 {
@@ -139,7 +164,7 @@ func newVastProvider(t *testing.T, s *Store) *vastProvider {
 }
 
 func rental(name string) RentArgs {
-	return RentArgs{"vastai", "1", "5090", name, "pytorch/pytorch:tag", 40, 1}
+	return RentArgs{"vastai", "1", "5090", name, "pytorch/pytorch:tag", 40, 1, nil}
 }
 
 func TestAmbiguousRentalSurvivesBrokerRestartAndUnrelatedRental(t *testing.T) {
@@ -162,7 +187,8 @@ func TestAmbiguousRentalSurvivesBrokerRestartAndUnrelatedRental(t *testing.T) {
 		t.Fatal("fault fixture unexpectedly allocated successfully")
 	}
 	db, e := recovered.readDB()
-	if e != nil || !db.Pending["vastai/training"] || !db.Pending["vastai/another"] || f.allocations.Load() != 2 {
+	if e != nil || !db.Pending["vastai/training"] || !db.Pending["vastai/another"] ||
+		f.allocations.Load() != 2 {
 		t.Fatal("unrelated rental erased recovery state", db, e)
 	}
 }
@@ -206,8 +232,15 @@ func TestConcurrentBrokersCannotRentSameNameTwice(t *testing.T) {
 	for range 2 {
 		other := newStore(s.Root, s.Run, s.Owner)
 		other.Base["vastai"] = f.server.URL
-		other.Output = writerFunc(func(data []byte) (int, error) { ready <- struct{}{}; <-release; return len(data), nil })
-		go func() { id, e := other.rent(rental("training")); results <- result{id, e} }()
+		other.Output = writerFunc(func(data []byte) (int, error) {
+			ready <- struct{}{}
+			<-release
+			return len(data), nil
+		})
+		go func() {
+			id, e := other.rent(rental("training"))
+			results <- result{id, e}
+		}()
 	}
 	for range 2 {
 		select {
@@ -313,7 +346,7 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 			if provider == "vastai" {
 				vast = newVastProvider(t, s)
 			} else {
-				args = RentArgs{"runpod", "gpu5090|SECURE|US-TX", "5090", "training", "pytorch/pytorch:tag", 40, 2}
+				args = RentArgs{"runpod", "gpu5090|SECURE|US-TX", "5090", "training", "pytorch/pytorch:tag", 40, 2, nil}
 				expectedID = "pod1"
 				var allocations syncatomic.Int64
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +356,21 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 					write := func(v any) { json.NewEncoder(w).Encode(v) }
 					switch {
 					case r.URL.Path == "/v2/catalog/gpus":
-						write(map[string]any{"gpus": []any{map[string]any{"id": "gpu5090", "name": "RTX 5090", "memory": 32, "secure": true, "community": false, "availability": "HIGH", "maxCount": map[string]int{"secure": 4}, "price": map[string]float64{"secure": 0.4}, "dataCenters": []any{map[string]string{"id": "US-TX", "availability": "HIGH"}}}}})
+						write(map[string]any{
+							"gpus": []any{
+								map[string]any{
+									"id":           "gpu5090",
+									"name":         "RTX 5090",
+									"memory":       32,
+									"secure":       true,
+									"community":    false,
+									"availability": "HIGH",
+									"maxCount":     map[string]int{"secure": 4},
+									"price":        map[string]float64{"secure": 0.4},
+									"dataCenters":  []any{map[string]string{"id": "US-TX", "availability": "HIGH"}},
+								},
+							},
+						})
 					case r.Method == "GET" && r.URL.Path == "/v2/pods":
 						write(map[string]any{"pods": []any{}})
 					case r.Method == "POST" && r.URL.Path == "/v2/pods":
@@ -331,7 +378,11 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 						json.NewDecoder(r.Body).Decode(&body)
 						gpu := object(body["gpu"])
 						public := text(object(body["env"])["PUBLIC_KEY"])
-						if gpu["id"] != "gpu5090" || gpu["count"] != float64(2) || body["cloud"] != "SECURE" || body["disk"] != float64(40) || body["image"] != "pytorch/pytorch:tag" || !strings.HasPrefix(public, "ssh-ed25519 ") || strings.Contains(public, "PRIVATE") {
+						if gpu["id"] != "gpu5090" || gpu["count"] != float64(2) || body["cloud"] != "SECURE" ||
+							body["disk"] != float64(40) ||
+							body["image"] != "pytorch/pytorch:tag" ||
+							!strings.HasPrefix(public, "ssh-ed25519 ") ||
+							strings.Contains(public, "PRIVATE") {
 							t.Error("wrong RunPod rental contract", body)
 						}
 						if allocations.Add(1) != 1 {
@@ -339,7 +390,14 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 						}
 						write(map[string]string{"id": "pod1"})
 					case r.Method == "GET" && r.URL.Path == "/v2/pods/pod1":
-						write(map[string]any{"id": "pod1", "name": "training", "status": "running", "gpu": map[string]any{"id": "gpu5090", "count": 2}, "cost": 0.8, "ssh": map[string]any{"direct": map[string]any{"host": "127.0.0.1", "port": port.Load(), "username": "worker"}}})
+						write(map[string]any{
+							"id":     "pod1",
+							"name":   "training",
+							"status": "running",
+							"gpu":    map[string]any{"id": "gpu5090", "count": 2},
+							"cost":   0.8,
+							"ssh":    map[string]any{"direct": map[string]any{"host": "127.0.0.1", "port": port.Load(), "username": "worker"}},
+						})
 					default:
 						t.Error("unexpected RunPod request", r.Method, r.URL.Path)
 						w.WriteHeader(500)
@@ -394,7 +452,8 @@ func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing
 			if e != nil {
 				t.Fatal(e)
 			}
-			if !grant.Approved || strings.Contains(string(encoded), rec.Key) || strings.Contains(string(encoded), "PRIVATE KEY") {
+			if !grant.Approved || strings.Contains(string(encoded), rec.Key) ||
+				strings.Contains(string(encoded), "PRIVATE KEY") {
 				t.Fatal("unsafe or missing public grant", string(encoded))
 			}
 			info, e := os.Stat(rec.Key)
@@ -461,7 +520,21 @@ func TestUntrustedProviderPricesCannotBecomeFreeRentalQuotes(t *testing.T) {
 		t.Run(fmt.Sprint(price), func(t *testing.T) {
 			s := testStore(t)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				json.NewEncoder(w).Encode(map[string]any{"gpus": []any{map[string]any{"id": "gpu5090", "name": "RTX 5090", "memory": 32, "secure": true, "community": false, "availability": "HIGH", "maxCount": map[string]int{"secure": 4}, "price": map[string]any{"secure": price}, "dataCenters": []any{map[string]string{"id": "US-TX", "availability": "HIGH"}}}}})
+				json.NewEncoder(w).Encode(map[string]any{
+					"gpus": []any{
+						map[string]any{
+							"id":           "gpu5090",
+							"name":         "RTX 5090",
+							"memory":       32,
+							"secure":       true,
+							"community":    false,
+							"availability": "HIGH",
+							"maxCount":     map[string]int{"secure": 4},
+							"price":        map[string]any{"secure": price},
+							"dataCenters":  []any{map[string]string{"id": "US-TX", "availability": "HIGH"}},
+						},
+					},
+				})
 			}))
 			defer server.Close()
 			s.Base["runpod"] = server.URL

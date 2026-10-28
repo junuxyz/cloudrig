@@ -138,7 +138,7 @@ func TestUnprivilegedExecutableRejectsEveryVerbDespiteSpoofedSudoIdentity(t *tes
 	if output, e := build.CombinedOutput(); e != nil {
 		t.Fatalf("native build failed: %s %v", output, e)
 	}
-	for _, verb := range []string{"daemon", "login", "rent", "approve", "start", "destroy", "self-test"} {
+	for _, verb := range []string{"daemon", "login", "rent", "approve", "start", "destroy", "recover", "self-test"} {
 		t.Run(verb, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()

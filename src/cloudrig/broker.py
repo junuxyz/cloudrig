@@ -1,4 +1,4 @@
-"""Unprivileged client. It never loads provider tokens or SSH private keys."""
+"""Call the root helper without reading its credentials or private keys."""
 
 import json
 import os
@@ -8,10 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cloudrig.models import CrigError, Instance, Offer, provider_name
+from cloudrig.models import CrigError, Instance, Offer, RateLimited, RentalNotSubmitted, provider_name
 from cloudrig.security import child_environment
 
 ROOT_UID = 0
+PROTOCOL_VERSION = 3
 HELPER = Path(
     "/Library/PrivilegedHelperTools/cloudrig-admin"
     if sys.platform == "darwin"
@@ -26,6 +27,10 @@ DEFAULT_IMAGES = {
 BILLING_URLS = {
     "vastai": "https://cloud.vast.ai/billing/",
     "runpod": "https://console.runpod.io/user/billing",
+}
+API_KEY_URLS = {
+    "vastai": "https://console.vast.ai/manage-keys/",
+    "runpod": "https://console.runpod.io/user/settings",
 }
 
 
@@ -59,15 +64,18 @@ def rpc(operation: str, provider: str, **values):
         result = json.loads(line)
     except (OSError, ValueError) as error:
         raise CrigError(
-            "Protected cloudrig service is unavailable. Install it with scripts/install-admin.sh."
+            "Cloudrig service is unavailable. Run crig in your own terminal to install or repair it."
         ) from error
     if result.get("error"):
+        seconds = result.get("retry_after")
+        if type(seconds) is int and 1 <= seconds <= 86400:
+            raise RateLimited(seconds)
         raise CrigError(str(result["error"]))
     return result.get("data")
 
 
 def admin(operation: str, *arguments: str):
-    if operation not in {"login", "approve", "rent", "start", "destroy", "self-test"}:
+    if operation not in {"login", "approve", "rent", "start", "destroy", "recover", "self-test"}:
         raise CrigError("Unknown privileged operation.")
     try:
         trusted_root_path(HELPER)
@@ -76,19 +84,30 @@ def admin(operation: str, *arguments: str):
     result = subprocess.run(
         ["/usr/bin/sudo", "-k", "--", str(HELPER), operation, *arguments],
         stdout=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
+        stderr=subprocess.PIPE if operation in {"rent", "start", "destroy"} else None,
+        stdin=None,
         text=True,
         check=False,
         env=child_environment(),
     )
     if result.returncode:
+        for line in reversed((result.stderr or "").splitlines()):
+            if line.startswith(("cloudrig-admin:", "sudo:")):
+                raise CrigError(line.partition(":")[2].strip())
         raise CrigError(
-            "Privileged operation did not complete. Inspect crig --rented before retrying a rental."
+            f"Authorization or helper execution failed with exit code {result.returncode}. "
+            "Inspect crig --rented before retrying a rental."
         )
     try:
         return json.loads(result.stdout)
     except ValueError as error:
         raise CrigError("Invalid helper result. Check crig --rented before repeating a rental.") from error
+
+
+def check_service(provider: str) -> None:
+    health = rpc("health", provider)
+    if not isinstance(health, dict) or health.get("protocol") != PROTOCOL_VERSION:
+        raise CrigError("Rebuild and reinstall the Cloudrig helper. Its protocol is outdated.")
 
 
 class BrokerProvider:
@@ -108,17 +127,38 @@ class BrokerProvider:
         return Instance(**rpc("instance", self.name, id=identifier))
 
     def rent(self, rental) -> str:
-        result = admin(
-            "rent",
-            self.name,
-            rental.offer.id,
-            rental.offer.gpu,
-            rental.name,
-            rental.image,
-            str(rental.disk),
-            str(rental.offer.count),
-        )
+        try:
+            check_service(self.name)
+        except CrigError as error:
+            raise RentalNotSubmitted(str(error)) from None
+        price = rental.offer.total(rental.disk)
+        if price is None:
+            price = rental.offer.hourly
+        try:
+            result = admin(
+                "rent",
+                self.name,
+                rental.offer.id,
+                rental.offer.gpu,
+                rental.name,
+                rental.image,
+                str(rental.disk),
+                str(rental.offer.count),
+                str(price),
+            )
+        except (CrigError, KeyboardInterrupt) as error:
+            try:
+                status = rpc("rental-status", self.name, query=rental.name)
+            except CrigError:
+                raise error from None
+            if status["state"] == "absent":
+                reason = str(error) if isinstance(error, CrigError) else "Rental request was interrupted."
+                raise RentalNotSubmitted(f"{reason}\nNo rental was submitted.") from None
+            raise error from None
         return result["id"]
+
+    def recover(self, name: str, identifier: str):
+        return admin("recover", self.name, name, identifier)
 
     def approve(self, identifier: str):
         admin("approve", self.name, identifier)

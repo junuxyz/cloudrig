@@ -37,7 +37,8 @@ func TestCredentialRotationCommitsOnlyAfterProviderValidation(t *testing.T) {
 				t.Fatal(e)
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer NEW_LINKED_SECRET" || r.Method != "GET" || r.URL.Path != "/api/v1/instances/" {
+				if r.Header.Get("Authorization") != "Bearer NEW_LINKED_SECRET" || r.Method != "GET" ||
+					r.URL.Path != "/api/v1/instances/" {
 					t.Error("validation used wrong credential or mutated provider", r.Method, r.URL.Path)
 				}
 				if !valid {
@@ -68,7 +69,8 @@ func TestCredentialRotationCommitsOnlyAfterProviderValidation(t *testing.T) {
 				t.Fatal("validated key did not commit", e)
 			}
 			db, readErr := s.readDB()
-			if readErr != nil || !db.Records["vastai-101"].Revoked || db.Records["runpod-pod1"].Revoked || !db.Pending["vastai/unresolved"] {
+			if readErr != nil || !db.Records["vastai-101"].Revoked || db.Records["runpod-pod1"].Revoked ||
+				!db.Pending["vastai/unresolved"] {
 				t.Fatal("rotation damaged unrelated authority/recovery state", db, readErr)
 			}
 			info, e := os.Stat(tokenPath)
@@ -81,7 +83,14 @@ func TestCredentialRotationCommitsOnlyAfterProviderValidation(t *testing.T) {
 
 func TestCredentialInputRejectsHeaderInjectionAndOversizedKeys(t *testing.T) {
 	s := testStore(t)
-	for _, token := range []string{"", strings.Repeat("A", 8193), "KEY\r\nAuthorization: injected", "KEY\x00VALUE", "KEY\tVALUE", "비밀키"} {
+	for _, token := range []string{
+		"",
+		strings.Repeat("A", 8193),
+		"KEY\r\nAuthorization: injected",
+		"KEY\x00VALUE",
+		"KEY\tVALUE",
+		"비밀키",
+	} {
 		if e := s.linkToken("vastai", token); e == nil {
 			t.Fatal("unsafe credential accepted")
 		}

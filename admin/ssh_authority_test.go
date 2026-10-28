@@ -142,7 +142,17 @@ func signerRecord(t *testing.T) (*Store, Record, sshFixture, sshFixture) {
 	if e = os.WriteFile(known, data, 0600); e != nil {
 		t.Fatal(e)
 	}
-	rec := Record{Provider: "vastai", ID: "authority", Name: "fixture", User: "worker", Host: "127.0.0.1", Port: approved.port, Key: key, KnownHosts: known, HostKey: string(approved.hostKey)}
+	rec := Record{
+		Provider:   "vastai",
+		ID:         "authority",
+		Name:       "fixture",
+		User:       "worker",
+		Host:       "127.0.0.1",
+		Port:       approved.port,
+		Key:        key,
+		KnownHosts: known,
+		HostKey:    string(approved.hostKey),
+	}
 	if e = writeJSON(filepath.Join(s.Root, "resources.json"), DB{Records: map[string]Record{"vastai-authority": rec}}); e != nil {
 		t.Fatal(e)
 	}

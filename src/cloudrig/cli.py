@@ -1,8 +1,11 @@
 import argparse
 import json
+import re
 import shlex
 import shutil
+import subprocess
 import sys
+from dataclasses import replace
 
 from rich.prompt import Prompt
 from rich.table import Table
@@ -11,6 +14,7 @@ from rich.text import Text
 from cloudrig import __version__, state
 from cloudrig.broker import BrokerProvider
 from cloudrig.connections import (
+    check_rsync,
     default_startup_script,
     full_ssh,
     install_alias,
@@ -23,7 +27,8 @@ from cloudrig.connections import (
 )
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError, Instance, InstanceAction, Rental
-from cloudrig.preparation import Preparation, show_status, start
+from cloudrig.preparation import Preparation, directory, read_job, show_status, start
+from cloudrig.security import child_environment, safe_diagnostic
 from cloudrig.terminal import console, prompt_confirm, waiting
 from cloudrig.tui import CloudrigApp, rate, sorted_offers
 
@@ -33,43 +38,27 @@ ACTIONS = {"ssh", "code", "exec", "agent", "push", "pull", "start", "stop", "des
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         prog="crig",
-        description="Find a GPU. Rent it. Get to work.",
+        description="Rent a cloud GPU and open a remote project.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""First run:
-  crig --set vastai          Choose vastai or runpod
-  crig login                Connect account; fresh sudo; credentials stay root-only
-  crig --gpu 5090            Browse, sort, review, and rent
-  crig --rented              Connect to or manage your instances
+        epilog="""Start here:
+  crig                      Open the dashboard
+  crig --gpu                Browse the GPU market
+  crig setup                Connect an account step by step
+  crig update               Update Cloudrig and its protected service
+  crig up .                 Open this project on a GPU
+  crig status               Check preparation progress
+  crig down .               Stop this project's GPU
 
-Everyday:
-  crig training code .       Open /workspace in remote VS Code
-  crig training ssh          Connect with a stable SSH alias
-  crig training push ./ /workspace/project/
-  crig training pull /workspace/outputs/ ./outputs/
-  crig training exec -- nvidia-smi
-  crig status               Check background setup and its log
-  crig startup > startup.sh  Export the default startup script to edit
-  crig --startup startup.sh --gpu 5090
-
-Try without an account:
-  crig --demo --gpu 5090
-  crig --demo --rented
-
-Project workspace prototype:
-  crig up . --demo --vram 32  Preview this project on a GPU, without an account
-  crig init .                Save project requirements in crig.toml
-  crig plan .                Review matching compute and disk quotes
-  crig up .                  Prepare this project and open VS Code; reconnect later
-  crig down .                Stop this project's compute after confirmation
-
-Run crig doctor to check local tools.
+Advanced commands and agent instructions are in docs/guide.md and docs/agents.md.
 """,
     )
     result.add_argument("words", nargs="*", metavar="ARG")
     result.add_argument("--version", action="version", version=f"cloudrig {__version__}")
     result.add_argument("--set", choices=state.PROVIDERS, dest="set_provider", help="Save default provider")
     result.add_argument("--provider", choices=state.PROVIDERS, help="Override provider for this invocation")
-    result.add_argument("--gpu", metavar="QUERY", help="Search GPUs by case-insensitive substring")
+    result.add_argument(
+        "--gpu", nargs="?", const="", metavar="QUERY", help="Open GPU market with an optional search"
+    )
     result.add_argument(
         "--rented", action="store_true", help="Show all rented instances in the selected account"
     )
@@ -85,6 +74,11 @@ Run crig doctor to check local tools.
         "--rent", metavar="OFFER_ID", help="Rent a specific result from --gpu; review before confirming"
     )
     result.add_argument("--name", help="Workspace name for --rent")
+    recovery = result.add_mutually_exclusive_group()
+    recovery.add_argument("--attach", metavar="ID", help="Recover a pending rental with its provider ID")
+    recovery.add_argument(
+        "--clear", action="store_true", help="Clear a pending rental after checking the account"
+    )
     result.add_argument("--image", help="Override the default container image")
     result.add_argument("--startup", metavar="FILE", help="Replace the default startup with this Bash script")
     result.add_argument(
@@ -111,21 +105,15 @@ Run crig doctor to check local tools.
     return result
 
 
-def intro():
-    console.print("\n[bold #fab283]▲  cloudrig[/]  [dim]Find a GPU. Get to work.[/]\n")
-    console.print("Choose your cloud first.\n")
-    console.print("  [bold]crig --set vastai[/]     Vast.ai marketplace")
-    console.print("  [bold]crig --set runpod[/]     RunPod GPU cloud\n")
-    console.print(
-        "Then run [bold]crig login[/] to connect your account, or try [bold]crig --demo --gpu 5090[/].\n"
-    )
-
-
 def login(provider: str):
-    from cloudrig.broker import admin
+    from cloudrig.broker import API_KEY_URLS, admin
 
+    url = API_KEY_URLS[provider]
+    console.print("\nNo API key yet? Create one here:")
+    console.print(Text(url, style=f"underline link {url}"))
+    console.print("Copy your key, then paste it into the hidden API key prompt.")
     admin("login", provider)
-    console.print(f"Connected to {provider}. Credentials are stored by the root-owned helper.")
+    console.print(f"Connected to {provider}. Your API key is stored in the protected service.")
 
 
 def print_rows(rows, args):
@@ -134,8 +122,8 @@ def print_rows(rows, args):
         return
     table = Table(box=None, padding=(0, 2), header_style="dim", highlight=False)
     if args.rented:
-        for name in ("NAME", "GPU", "STATUS", "USD / HR", "REGION", "ID"):
-            table.add_column(name, no_wrap=name in {"NAME", "ID"})
+        for name in ("Name", "GPU", "Status", "USD / hr", "Region", "ID"):
+            table.add_column(name, no_wrap=name in {"Name", "ID"})
         for row in rows:
             table.add_row(
                 Text(row.name),
@@ -146,7 +134,7 @@ def print_rows(rows, args):
                 Text(row.id),
             )
     else:
-        for name in ("GPU", "VRAM / GPU", "USD / HR", "REGION", "OFFER"):
+        for name in ("GPU", "VRAM / GPU", "USD / hr", "Region", "Offer"):
             table.add_column(name)
         for row in rows:
             table.add_row(
@@ -181,7 +169,7 @@ def resolve(api, target: str | None) -> Instance:
 
 def rent(api, rental: Rental, args, startup_script: str | None = None):
     if args.demo:
-        console.print("Demo rental reviewed. No resource or credential was changed.")
+        console.print("Demo only. No GPU was rented.")
         return
     from cloudrig.workspace import preflight
 
@@ -201,9 +189,11 @@ def rent(api, rental: Rental, args, startup_script: str | None = None):
                 code_path=remote,
             )
         )
-        console.print(f"Preparing {rental.name} in the background. Check: crig status", markup=False)
         console.print(
-            "A notification will appear when setup finishes."
+            f"Preparing {rental.name} in the background. Open crig to follow progress.", markup=False
+        )
+        console.print(
+            "You will be notified when setup finishes."
             if remote is None
             else "VS Code will open when setup finishes."
         )
@@ -216,20 +206,44 @@ def rent(api, rental: Rental, args, startup_script: str | None = None):
         open_code(instance, remote)
 
 
-def finish(api, result, args, startup_script: str | None = None):
-    # The TUI can switch between market and workspaces, so either result may come back.
-    if isinstance(result, Rental):
-        rent(api, result, args, startup_script)
-    elif isinstance(result, InstanceAction):
-        action(api, result.instance, result.action, [], args, startup_script)
+def dashboard(api, args, startup_script: str | None = None, *, selected_id: str | None = None):
+    """Return to the dashboard after completing one explicitly selected action."""
+    action_error = None
+    while True:
+        result = CloudrigApp(
+            api,
+            query=args.gpu or "",
+            rented=args.rented,
+            disk=args.disk,
+            count=args.count,
+            sort=args.sort,
+            demo=args.demo,
+            image=args.image,
+            selected_id=selected_id,
+            action_error=action_error,
+        ).run()
+        if result is None:
+            return
+        action_error = None
+        try:
+            if isinstance(result, Rental):
+                rent(api, result, args, startup_script)
+            else:
+                action(api, result.instance, result.action, [], args, startup_script)
+        except CrigError as error:
+            action_error = str(error)
+        args.rented = True
+        if isinstance(result, InstanceAction):
+            selected_id = result.instance.id
+        elif not args.demo:
+            selected_id = state.load().get("active", {}).get(api.name)
 
 
 def action(api, item: Instance, name: str, paths: list[str], args, startup_script: str | None = None):
     if args.demo:
-        console.print(Text(f"Demo: {name} → {item.name}. No SSH, files, or cloud resources were changed."))
+        console.print(Text(f"Demo: {name} on {item.name}. No changes made."))
         return
     if name in {"stop", "destroy", "start", "approve"}:
-        message = f"{name.capitalize()} {item.name} ({item.id})?"
         if name == "destroy":
             console.print(
                 "[yellow]Deleting removes this instance and its local files. Pull your outputs first.[/]"
@@ -239,9 +253,9 @@ def action(api, item: Instance, name: str, paths: list[str], args, startup_scrip
         elif name == "start":
             console.print("Starting resumes billable compute. The root helper will check and quote it.")
         if name == "stop":
-            prompt_confirm(message, args.yes)
+            prompt_confirm(f"Stop {item.name} ({item.id})?", args.yes)
         getattr(api, name)(item.id)
-        console.print(Text(f"✓ {name.capitalize()} request accepted for {item.name}.", style="green"))
+        console.print(Text(f"{name.capitalize()} request accepted for {item.name}.", style="green"))
         return
     fresh = api.instance(item.id)
     if fresh.status != "running":
@@ -251,22 +265,40 @@ def action(api, item: Instance, name: str, paths: list[str], args, startup_scrip
     if name == "code" and not args.wait:
         remote = paths[0] if paths else "/workspace"
         state.remember_instance(api.name, item.id)
-        start(
-            Preparation(
-                provider=api.name,
-                identifier=item.id,
-                name=item.name,
-                timeout=args.timeout,
-                startup_script=startup_script,
-                code_path="/workspace" if remote == "." else remote,
-            )
+        job = Preparation(
+            provider=api.name,
+            identifier=item.id,
+            name=item.name,
+            timeout=args.timeout,
+            startup_script=startup_script,
+            code_path="/workspace" if remote == "." else remote,
         )
-        console.print(f"Preparing {item.name} in the background. Check: crig status", markup=False)
+        folder = directory(api.name, item.id)
+        if not paths and ((folder / "job.json").exists() or (folder / "job.json").is_symlink()):
+            saved = read_job(folder)
+            if saved.project:
+                from cloudrig.project import receipt
+
+                binding = receipt(saved.project)
+                if binding and binding.id == item.id and binding.needs_upload:
+                    prompt_confirm("Finish initial upload? Local files can overwrite matching remote files.")
+                job = replace(
+                    saved,
+                    code_path=saved.project.remote,
+                    timeout=args.timeout,
+                    startup_script=saved.startup_script if startup_script is None else startup_script,
+                )
+        start(job)
+        console.print(f"Preparing {item.name} in the background. Open crig to follow progress.", markup=False)
         console.print("VS Code will open when setup finishes.")
         return
     with waiting() as progress:
         fresh = wait_ready(
-            api, item.id, timeout=args.timeout, startup_script=startup_script, progress=progress
+            api,
+            item.id,
+            timeout=args.timeout,
+            startup_script="" if name == "ssh" and startup_script is None else startup_script,
+            progress=progress,
         )
     state.remember_instance(api.name, item.id)
     if name == "code":
@@ -294,13 +326,7 @@ def action(api, item: Instance, name: str, paths: list[str], args, startup_scrip
         alias_name = install_alias(fresh)
         if name == "ssh":
             run(ssh_command(alias_name))
-            target = fresh.id
-            try:
-                if fresh.name and resolve(api, fresh.name).id == fresh.id:
-                    target = fresh.name
-            except CrigError:
-                pass  # Keep the ID if the name is ambiguous or no longer available.
-            console.print(f"Instance still rented. Stop: crig {shlex.quote(target)} stop", markup=False)
+            console.print(f"Instance still rented. Stop it with crig {fresh.id} stop.", markup=False)
         elif name == "exec":
             full_ssh(fresh)
             if not paths:
@@ -322,32 +348,62 @@ def action(api, item: Instance, name: str, paths: list[str], args, startup_scrip
 
 
 def doctor():
-    from cloudrig.broker import HELPER, trusted_root_path
+    from cloudrig.broker import HELPER, check_service, trusted_root_path
+    from cloudrig.workspace import preflight
 
     table = Table(box=None, header_style="dim")
-    table.add_column("TOOL")
-    table.add_column("STATUS")
-    table.add_column("PURPOSE / SETUP")
-    for tool, purpose in [
-        ("ssh", "Connect to GPU instances"),
-        ("rsync", "File transfer requires upstream rsync 3.5.0+"),
-        ("code", "Install VS Code shell command and Remote - SSH extension"),
-    ]:
-        path = shutil.which(tool)
-        table.add_row(tool, Text(path or "Missing", style="green" if path else "yellow"), purpose)
+    table.add_column("Tool")
+    table.add_column("Status")
+    table.add_column("Setup")
+    failed = False
+
+    def check(tool, purpose, action):
+        nonlocal failed
+        try:
+            detail = action()
+            status = Text(str(detail or "Ready"), style="green")
+        except (CrigError, OSError, subprocess.TimeoutExpired) as error:
+            failed = True
+            status = Text(str(error) if isinstance(error, CrigError) else "Check failed", style="yellow")
+        table.add_row(tool, status, purpose)
+
+    def ssh_version():
+        binary = shutil.which("ssh")
+        if not binary:
+            raise CrigError("Install OpenSSH 8.9+")
+        result = subprocess.run(
+            [binary, "-V"], capture_output=True, text=True, timeout=10, env=child_environment()
+        )
+        match = re.search(r"OpenSSH_(\d+)\.(\d+)", result.stderr + result.stdout)
+        if result.returncode or not match or tuple(map(int, match.groups())) < (8, 9):
+            raise CrigError("OpenSSH 8.9+ is required")
+        return f"OpenSSH {'.'.join(match.groups())}"
+
+    check("ssh", "Approved GPU connections", ssh_version)
+    check("rsync", "Uploads and downloads", lambda: ".".join(map(str, check_rsync())))
+    check(
+        "code",
+        "VS Code with Remote - SSH; optional with --no-code",
+        lambda: preflight(upload=False, editor=True),
+    )
     try:
         trusted_root_path(HELPER)
         helper_status = Text(str(HELPER), style="green")
     except (OSError, CrigError):
+        failed = True
         helper_status = Text("Missing or unprotected", style="yellow")
-    table.add_row(
-        "root helper", helper_status, "Install with scripts/install-admin.sh; verify with crig self-test"
-    )
+    table.add_row("root helper", helper_status, "Run crig; verify with crig self-test")
+
+    check("service", "Root helper connection", lambda: check_service("vastai"))
     console.print(table)
     console.print(
         "Credentials require the root-owned service. No environment/keychain credential fallback is used."
     )
     console.print("No provider CLI is required. Run crig --demo --gpu 5090 to preview the UI.")
+    if failed:
+        raise CrigError(
+            "Some checks failed. Fix the listed tools before renting, or use --no-code without VS Code."
+        )
 
 
 def dispatch(args):
@@ -376,17 +432,32 @@ def dispatch(args):
         if args.demo:
             raise CrigError("--demo never changes configuration. Remove --demo to select a provider.")
         state.update(provider=args.set_provider)
-        console.print(
-            f"[green]✓[/] Default cloud: {args.set_provider}. Run crig login to connect your account."
-        )
+        console.print(f"Default provider: {args.set_provider}. Run crig login to connect your account.")
         return
-    if not args.demo and not state.load().get("provider") and not args.provider:
-        intro()
-        if words or args.gpu is not None or args.rented:
+    provider = args.provider or ("vastai" if args.demo else state.load().get("provider"))
+    if provider not in state.PROVIDERS:
+        console.print("Run crig setup to connect an account, or crig --demo to try it without one.")
+        if provider is not None or words or args.gpu is not None or args.rented:
             raise CrigError("Select a provider before this command.")
         return
-    provider = args.provider or ("vastai" if args.demo else state.provider_or_error())
     command = words[0] if words else ""
+    if command == "recover":
+        if len(words) != 2 or not (args.attach or args.clear):
+            raise CrigError(
+                "Use crig recover NAME --attach ID, or --clear after checking the provider console."
+            )
+        if args.demo:
+            console.print("Demo: no rental recovery record was changed.")
+            return
+        if args.clear:
+            console.print(
+                "Clear only after verifying in the provider console that this rental created no instance."
+            )
+        BrokerProvider(provider).recover(words[1], "-" if args.clear else args.attach)
+        console.print("Recovered the protected rental record. No instance was rented, started, or deleted.")
+        return
+    if args.attach or args.clear:
+        raise CrigError("--attach and --clear belong to crig recover NAME.")
     if command == "login" and args.demo:
         raise CrigError("--demo does not access credentials or register keys.")
     if command == "login":
@@ -431,10 +502,7 @@ def dispatch(args):
             else:
                 print_rows(offers, args)
             return
-        result = CloudrigApp(
-            api, args.gpu, disk=args.disk, count=args.count, sort=args.sort, demo=args.demo, image=args.image
-        ).run()
-        finish(api, result, args, startup_script)
+        dashboard(api, args, startup_script)
         return
     if args.rent:
         raise CrigError("Use --rent with --gpu QUERY so the current offer and price can be reviewed.")
@@ -454,19 +522,38 @@ def dispatch(args):
     if args.plain or args.json or not sys.stdin.isatty():
         print_rows(api.instances(), args)
     else:
-        result = CloudrigApp(api, rented=True, demo=args.demo, image=args.image).run()
-        finish(api, result, args, startup_script)
+        dashboard(api, args, startup_script)
 
 
 def main():
+    argv = sys.argv[1:]
     try:
-        if sys.argv[1:2] and sys.argv[1] in {"init", "plan", "up", "down", "forget"}:
+        configured = bool(state.load().get("provider")) if not argv and sys.stdin.isatty() else False
+        if not argv and sys.stdin.isatty() and not configured:
+            from cloudrig.onboarding import setup
+
+            if not setup([]):
+                return
+        if not argv and sys.stdin.isatty() and configured:
+            from cloudrig.installation import ensure_service
+
+            ensure_service(state.load()["provider"])
+        if argv and argv[0] in {"update", "uninstall"}:
+            from cloudrig.installation import uninstall, update
+
+            (update if argv[0] == "update" else uninstall)(argv[1:])
+            return
+        if argv and argv[0] == "setup":
+            from cloudrig.onboarding import setup
+
+            setup(argv[1:])
+            return
+        if argv and argv[0] in {"init", "plan", "up", "down", "forget"}:
             from cloudrig.workspace_cli import dispatch as workspace_dispatch
 
-            workspace_dispatch(sys.argv[1:])
+            workspace_dispatch(argv)
             return
         # Preserve remote command options after '--'; they belong to the remote executable.
-        argv = sys.argv[1:]
         remote = []
         if "--" in argv:
             index = argv.index("--")
@@ -488,11 +575,12 @@ def main():
             )
         )
         raise SystemExit(1) from None
-    except Exception:
+    except Exception as error:
         console.print(
             "crig: Unexpected failure. Diagnostic details were withheld to protect credentials. "
             "No automatic retry was made. Check crig --rented before repeating a rental."
         )
+        console.print(f"Diagnostic: {json.dumps(safe_diagnostic(error))}", markup=False)
         raise SystemExit(1) from None
 
 

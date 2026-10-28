@@ -1,7 +1,8 @@
-"""Boundaries between local secrets and untrusted cloud machines."""
+"""Filter child environments and check access to local files."""
 
 import os
 import stat
+import traceback
 from pathlib import Path
 
 from cloudrig.models import CrigError
@@ -43,6 +44,17 @@ CHILD_ENV = frozenset(
 
 def child_environment() -> dict[str, str]:
     return {name: value for name, value in os.environ.items() if name in CHILD_ENV}
+
+
+def safe_diagnostic(error: Exception) -> dict:
+    """Keep locations for a bug report without exception messages, source text, or local values."""
+    return {
+        "type": type(error).__name__,
+        "frames": [
+            {"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
+            for frame in traceback.extract_tb(error.__traceback__)
+        ],
+    }
 
 
 def check_transfer_path(path: Path) -> None:

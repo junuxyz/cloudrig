@@ -1,4 +1,4 @@
-"""Project requirements and local workspace receipts. No provider credentials live here."""
+"""Load project settings and save allocation records."""
 
 import hashlib
 import json
@@ -30,6 +30,7 @@ class Project:
     region: str = ""
     image: str = ""
     startup: str = ""
+    framework: str = "none"
 
     @property
     def key(self) -> str:
@@ -55,7 +56,19 @@ class Project:
         return {**asdict(self), "root": str(self.root), "remote": self.remote, "setup": self.setup}
 
 
-SETTINGS = ("provider", "gpu", "vram", "count", "disk", "max_hourly", "hours", "region", "image", "startup")
+SETTINGS = (
+    "provider",
+    "gpu",
+    "vram",
+    "count",
+    "disk",
+    "max_hourly",
+    "hours",
+    "region",
+    "image",
+    "startup",
+    "framework",
+)
 
 
 def load_project(path: str, *, default_provider: str = "vastai", **overrides) -> Project:
@@ -70,14 +83,19 @@ def load_project(path: str, *, default_provider: str = "vastai", **overrides) ->
             configured = tomllib.loads(manifest.read_text()).get("workspace", {})
         except (OSError, ValueError) as error:
             raise CrigError("Cannot read crig.toml. Check its TOML syntax.") from error
-        if not isinstance(configured, dict) or configured.keys() - set(SETTINGS):
-            raise CrigError("Unknown workspace settings in crig.toml. See crig init --help.")
+        if not isinstance(configured, dict):
+            raise CrigError("Use a [workspace] table in crig.toml.")
+        if unknown := configured.keys() - set(SETTINGS):
+            names = ", ".join(repr(key) for key in sorted(unknown))
+            raise CrigError(f"Unknown settings in crig.toml: {names}.")
         values.update(configured)
     values.update({key: value for key, value in overrides.items() if value is not None})
     name = re.sub(r"[^a-z0-9_-]+", "-", root.name.lower()).strip("-_")[:40] or "project"
     project = Project(root, name, **values)
     if project.provider not in state.PROVIDERS:
         raise CrigError("Workspace provider must be vastai or runpod.")
+    if project.framework not in ("none", "pytorch"):
+        raise CrigError("Workspace framework must be none or pytorch.")
     for field in ("vram", "max_hourly", "hours"):
         number(getattr(project, field), positive=True)
     for field in ("count", "disk"):
@@ -93,21 +111,24 @@ def load_project(path: str, *, default_provider: str = "vastai", **overrides) ->
 
 
 def candidates(project: Project, offers: list[Offer]) -> list[Offer]:
-    """Require a complete quote for a price ceiling. Never guess an unknown storage rate."""
-    rows = [
-        row
-        for row in offers
-        if row.provider == project.provider
-        and project.gpu.casefold() in row.gpu.casefold()
-        and row.vram >= project.vram
-        and row.count == project.count
-        and (row.disk_max is None or row.disk_max >= project.disk)
-        and project.region.casefold() in row.region.casefold()
-        and row.availability == "available"
-        and row.total(project.disk) is not None
-        and row.total(project.disk) <= project.max_hourly
-    ]
-    return sorted(rows, key=lambda row: (row.total(project.disk), -(row.reliability or 0), row.id))
+    """Match the GPU requirements and compute-plus-disk price limit."""
+    matches = []
+    for offer in offers:
+        if (
+            offer.provider != project.provider
+            or project.gpu.casefold() not in offer.gpu.casefold()
+            or offer.vram < project.vram
+            or offer.count != project.count
+            or (offer.disk_max is not None and offer.disk_max < project.disk)
+            or project.region.casefold() not in offer.region.casefold()
+            or offer.availability != "available"
+        ):
+            continue
+        price = offer.total(project.disk)
+        if price is not None and price <= project.max_hourly:
+            matches.append((price, offer))
+    matches.sort(key=lambda item: (item[0], -(item[1].reliability or 0), item[1].id))
+    return [offer for _, offer in matches]
 
 
 class Phase(StrEnum):
@@ -151,7 +172,11 @@ def receipt(project: Project) -> Binding | None:
 def save_receipt(project: Project, binding: Binding) -> Binding:
     with state.state_lock():
         data = state.load()
-        data.setdefault("projects", {})[project.key] = asdict(binding)
+        data.setdefault("projects", {})[project.key] = {
+            **asdict(binding),
+            "root": str(project.root),
+            "provider": project.provider,
+        }
         state.atomic_write(state.config_dir() / "config.json", json.dumps(data, indent=2) + "\n")
     return binding
 
@@ -161,6 +186,19 @@ def forget_receipt(project: Project) -> None:
         data = state.load()
         data.get("projects", {}).pop(project.key, None)
         state.atomic_write(state.config_dir() / "config.json", json.dumps(data, indent=2) + "\n")
+
+
+def bound_provider(root: Path) -> str | None:
+    """Find an allocation independently of the current provider preference."""
+    projects = state.load().get("projects", {})
+    providers = [
+        provider
+        for provider in state.PROVIDERS
+        if Project(root, root.name, provider=provider).key in projects
+    ]
+    if len(providers) > 1:
+        raise CrigError("This project has bindings on both providers. Select one with --provider.")
+    return providers[0] if providers else None
 
 
 @contextmanager

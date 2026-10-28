@@ -1,41 +1,41 @@
 # Reliability test plan
 
-Scope: native credential broker, provider mutations, SSH authority, and concurrent local
-state. No real provider, paid resource, root installation, or sudo-policy mutation is needed.
+Test provider requests, protected credentials, SSH approval, and concurrent local state against
+local fixtures. The automated suite must not rent paid resources, install a root service, or alter
+sudo policy.
 
-## Rules for accepting a test
+## Test requirements
 
-- Run real broker operations against local HTTP/Unix servers and inspect returned data, on-disk
-  recovery state, actual provider request payloads, or SSH authentication results.
-- Pair refusal paths with a successful control. A test that only checks that a mock was not
-  called cannot establish the boundary.
-- Inject faults at a boundary, not by replacing the business operation under test. Use bounded
-  waits and observable synchronization rather than timing-dependent sleeps.
-- Failed attempts must preserve the last valid state or leave a durable receipt that prevents
-  duplicate spending. A refusal alone is insufficient if a mutation already happened.
+Call the actual operation and inspect its returned data, saved records, provider request, or SSH
+result. Inject faults at the external operation, not by replacing the policy under test. Use
+bounded waits and explicit process coordination.
 
-## Cases and failure oracles
+Pair refusal tests with a successful case. A mocked call that never happened does not prove that
+the real operation rejects it. Check that failed requests preserve the last valid state or leave
+a recovery record that prevents duplicate spending.
 
-| Boundary | Scenario | Required observable result |
+## Required cases
+
+| Area | Scenario | Expected result |
 | --- | --- | --- |
-| Unix API | Allowed reads/approved stop, spending requests, wrong peer UID, malformed input | Reads and approved stop succeed with correct provider payloads. Other requests return errors and cannot mutate the provider. Wrong UID receives no data. |
-| Rental recovery | Provider receives allocation but response fails | Exactly one allocation request. A fresh broker using the same disk state refuses a repeat. A different rental cannot erase the ambiguous receipt. |
-| Known allocation | SSH-key registration fails after an allocation ID is returned; listing is stale | The returned ID is on disk before registration. Retrying the same name cannot allocate a second GPU. |
-| Concurrent requests | Two broker instances rent the same name | A coordinated overlap results in exactly one allocation, including when the provider list is stale. Both calls terminate and recovery state is valid JSON. |
-| Credential rotation | Provider validates/rejects a newly entered key | Rejection restores the old token and authority byte-for-byte. Success uses the new token, revokes only this provider's grants, and preserves unrelated pending requests. |
-| Start pricing | Price rises, missing/invalid contract quote, exact RunPod GPU/cloud/count | Increased/unverifiable quote cannot start; an unchanged quote starts exactly the intended instance with the correct payload. |
-| Delete | Provider delete fails or succeeds | Signing authority is revoked before the provider receives deletion. Failure retains a recovery record; confirmed deletion permits deliberate name reuse. |
-| Provider pages | Multiple pages, repeated cursor, invalid numeric data | Exact normalized results across pages; cycles/invalid quotes fail rather than returning partial/free offers. |
-| SSH signer | Approved host, different host/user, revocation while socket remains open | Real OpenSSH authenticates only to the approved destination/user. An already-open proxy refuses new requests after revocation. |
-| Service lifecycle | Revoke/regrant a running signer, terminate service, corrupt its authority database | Reconciliation stops/restarts the actual signer. Graceful termination or corrupt state removes live API/signing sockets and the private agent socket. |
-| Durable local state | Parallel processes update distinct preferences; atomic rename fails | All committed updates survive, files retain private permissions, and failed replacement leaves the original file readable without temporary debris. |
-| Agent framing | Truncated/oversized/fragmented input | Invalid frames fail without a panic; valid fragmented frames decode exactly. Fuzzing checks length/protocol invariants. |
+| Unix API | Allowed reads and stops; forbidden spending; wrong caller; malformed input | Approved operations send the expected request. Forbidden operations change nothing and return no credentials. |
+| Uncertain rental | The provider receives allocation but its response fails | Only one allocation request reaches the provider. Restart and unrelated rentals preserve the pending record. |
+| Known allocation | SSH registration fails and provider listings lag | The ID is saved before registration. Retrying cannot allocate a second GPU. |
+| Concurrent rentals | Two helper processes request the same name | Exactly one allocation succeeds, both calls finish, and recovery state remains valid JSON. |
+| Credential rotation | The provider accepts or rejects the replacement key | Rejected validation leaves the live token and records unchanged. Success revokes only that provider's grants and preserves unrelated pending requests. |
+| Installation | Replacement, validation, startup, self-test, or restoration fails; installer is killed | Previous files and service state are restored. Failed restoration retains backups. A later attempt recovers saved installation state. |
+| Start pricing | Price increases or GPU/count/contract data is invalid | Unverifiable or increased prices cannot start compute. The unchanged quote starts the intended instance. |
+| Deletion | The provider accepts or rejects deletion | The helper revokes signing before the request. Failure retains the allocation record. Confirmed deletion permits later name reuse. |
+| Recovery | Attach an uncertain rental or clear an externally deleted one | The ID/name pair and saved key match. Clearing refuses a listed instance or failed provider read. No paid mutation occurs. |
+| Provider pages | Multiple pages, repeated cursors, and invalid numbers | All valid pages appear once. Cycles and invalid quotes fail without partial results. |
+| SSH signer | Approved destination, wrong host/user, or changed grant | Actual OpenSSH accepts only the approved identity and destination. An open proxy refuses new requests after revocation. |
+| Service shutdown | Revoke or replace grants, cancel the process, or corrupt its state | The service stops affected signers and removes live sockets on shutdown or corruption. |
+| Local state | Concurrent writes and failed atomic replacement | All committed changes survive. Private permissions remain. A failed replacement preserves the old file and removes temporary files. |
+| Agent messages | Fragmented, truncated, and oversized frames | Valid fragmented messages decode unchanged. Invalid messages fail without a panic. |
+| Project setup | Upload, dependency installation, or GPU check fails | The binding retains its ID and completed steps. A retry does not overwrite a completed upload. |
+| Terminal UI | Empty results, failed reads, invalid checkout fields, and retry | Errors remain distinct from empty results. Invalid rentals cannot leave checkout. Retry restores usable results. |
 
-## Execution
-
-1. Add the cases above and run focused tests. Repair any demonstrated production defect with a
-   regression test that exercises the failure, not the patch's internal shape.
-2. Run the complete Python suite and native suite with race detection and a deadline.
-3. Run bounded Go fuzz campaigns for untrusted protocol inputs.
-4. Record commands, failures found, and untested OS/live-provider limits
-   in the verification document. Coverage is diagnostic, not a pass threshold.
+Run focused cases while editing, then the complete Python suite, Ruff, Go race tests, and `go vet`.
+Use bounded fuzz runs for untrusted parsers. Record results and remaining installed-service or
+live-provider checks in [verification.md](verification.md). Coverage can identify untested code;
+it does not establish correctness by itself.

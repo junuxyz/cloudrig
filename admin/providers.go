@@ -13,17 +13,21 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
+
+type rateLimitError struct{ seconds int }
+
+func (e *rateLimitError) Error() string {
+	return fmt.Sprintf("provider is limiting requests; retry in %d seconds", e.seconds)
+}
 
 func validProvider(p string) bool { return p == "vastai" || p == "runpod" }
 
 func validNumber(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) && n >= 0 }
 
 func text(v any) string {
-	if v == nil {
-		return ""
-	}
 	switch x := v.(type) {
 	case string:
 		return x
@@ -51,9 +55,6 @@ func num(v any) float64 {
 
 func object(v any) map[string]any {
 	m, _ := v.(map[string]any)
-	if m == nil {
-		return map[string]any{}
-	}
 	return m
 }
 
@@ -79,7 +80,11 @@ func safeLabel(v string) bool {
 }
 
 func (s *Store) call(p, method, path string, body any) (any, error) {
-	if !validProvider(p) || !strings.HasPrefix(path, "/api/") && p == "vastai" || !strings.HasPrefix(path, "/v2/") && p == "runpod" {
+	prefix := "/v2/"
+	if p == "vastai" {
+		prefix = "/api/"
+	}
+	if !validProvider(p) || !strings.HasPrefix(path, prefix) {
 		return nil, errors.New("invalid provider path")
 	}
 	token, e := os.ReadFile(filepath.Join(s.Root, p+".token"))
@@ -105,6 +110,15 @@ func (s *Store) call(p, method, path string, body any) (any, error) {
 		return nil, errors.New("provider connection failed; check rented instances before repeating a mutation")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		seconds := 30
+		if n, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && n >= 0 {
+			seconds = min(86400, max(1, n))
+		} else if when, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
+			seconds = min(86400, max(1, int(math.Ceil(time.Until(when).Seconds()))))
+		}
+		return nil, &rateLimitError{seconds: seconds}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("provider returned HTTP %d; response details withheld", resp.StatusCode)
 	}
@@ -122,7 +136,10 @@ func (s *Store) call(p, method, path string, body any) (any, error) {
 }
 
 func (s *Store) offers(r Request) ([]Offer, error) {
-	if !validProvider(r.Provider) || len(r.Query) > 128 || !safeLabel(r.Query) || r.Disk < 1 || r.Disk > 100000 || r.Count < 1 || r.Count > 64 {
+	if !validProvider(r.Provider) || len(r.Query) > 128 || !safeLabel(r.Query) || r.Disk < 1 ||
+		r.Disk > 100000 ||
+		r.Count < 1 ||
+		r.Count > 64 {
 		return nil, errors.New("invalid search")
 	}
 	out := []Offer{}
@@ -204,6 +221,7 @@ func (s *Store) offers(r Request) ([]Offer, error) {
 		}
 	} else {
 		for _, cloud := range []string{"SECURE", "COMMUNITY"} {
+			tier := strings.ToLower(cloud)
 			v, e := s.call("runpod", "GET", fmt.Sprintf("/v2/catalog/gpus?include=AVAILABILITY&product=POD&count=%d&cloud=%s", r.Count, cloud), nil)
 			if e != nil {
 				return nil, e
@@ -211,11 +229,11 @@ func (s *Store) offers(r Request) ([]Offer, error) {
 			for _, v := range array(object(v)["gpus"]) {
 				row := object(v)
 				if !strings.Contains(strings.ToLower(text(row["name"])), strings.ToLower(r.Query)) ||
-					row[strings.ToLower(cloud)] != true || text(row["availability"]) == "NONE" ||
-					num(object(row["maxCount"])[strings.ToLower(cloud)]) < float64(r.Count) {
+					row[tier] != true || text(row["availability"]) == "NONE" ||
+					num(object(row["maxCount"])[tier]) < float64(r.Count) {
 					continue
 				}
-				price := object(row["price"])[strings.ToLower(cloud)]
+				price := object(row["price"])[tier]
 				if price == nil {
 					continue
 				}
@@ -270,17 +288,39 @@ func (s *Store) instances(provider string) ([]Instance, error) {
 		if provider == "runpod" {
 			field = "pods"
 		}
-		for _, v := range array(data[field]) {
+		items, ok := data[field].([]any)
+		if !ok {
+			return nil, errors.New("provider returned an invalid instance list")
+		}
+		for _, v := range items {
 			i, e := parseInstance(provider, object(v))
 			if e != nil {
 				return nil, e
 			}
 			result = append(result, i)
 		}
-		if provider == "vastai" {
-			cursor = text(data["next_token"])
-		} else {
-			cursor = text(object(data["pagination"])["nextCursor"])
+		var next any = data["next_token"]
+		if provider == "runpod" {
+			if raw := data["pagination"]; raw != nil {
+				pagination, ok := raw.(map[string]any)
+				if !ok {
+					return nil, errors.New("provider returned invalid pagination")
+				}
+				next = pagination["nextCursor"]
+				if pagination["hasNextPage"] == true && (next == nil || next == "") {
+					return nil, errors.New("provider omitted the next page cursor")
+				}
+			} else {
+				next = nil
+			}
+		}
+		cursor = ""
+		if next != nil {
+			var ok bool
+			cursor, ok = next.(string)
+			if !ok {
+				return nil, errors.New("provider returned an invalid page cursor")
+			}
 		}
 		if cursor == "" {
 			return result, nil
@@ -333,7 +373,8 @@ func parseInstance(provider string, row map[string]any) (Instance, error) {
 	if i.Count < 1 {
 		i.Count = 1
 	}
-	if !safeLabel(i.Name) || !safeLabel(i.GPU) || !validNumber(i.Hourly) || !validNumber(i.ContractRate) {
+	if !safeLabel(i.Name) || !safeLabel(i.GPU) || !safeLabel(i.Region) || !safeLabel(i.Status) ||
+		!safeLabel(i.Host) || !safeLabel(i.User) || !validNumber(i.Hourly) || !validNumber(i.ContractRate) {
 		return i, errors.New("invalid instance metadata")
 	}
 	return i, nil

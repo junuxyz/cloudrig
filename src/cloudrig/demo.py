@@ -7,6 +7,7 @@ class Demo:
     default_image = DEFAULT_IMAGES[name]
 
     def offers(self, query: str, disk: int = 40, count: int = 1) -> list[Offer]:
+        query = query.casefold()
         rows = [
             Offer(
                 "84021",
@@ -106,9 +107,7 @@ class Demo:
             ),
         ]
         return [
-            row
-            for row in rows
-            if query.casefold() in row.gpu.casefold() and row.count >= count and row.disk_max >= disk
+            row for row in rows if query in row.gpu.casefold() and row.count >= count and row.disk_max >= disk
         ]
 
     def instances(self) -> list[Instance]:

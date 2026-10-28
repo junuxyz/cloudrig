@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -36,10 +35,7 @@ func (s *Store) login(provider string) error {
 }
 
 func (s *Store) linkToken(provider, token string) error {
-	if !validProvider(provider) {
-		return errors.New("invalid provider")
-	}
-	if len(token) < 1 || len(token) > 8192 || !regexp.MustCompile(`^[!-~]+$`).MatchString(token) {
+	if len(token) > 8192 || !tokenPattern.MatchString(token) {
 		return errors.New("invalid token format")
 	}
 	unlock, e := s.lock()
@@ -47,22 +43,22 @@ func (s *Store) linkToken(provider, token string) error {
 		return e
 	}
 	defer unlock()
-	tokenPath := filepath.Join(s.Root, provider+".token")
-	previous, previousError := os.ReadFile(tokenPath)
-	if e = atomic(tokenPath, []byte(token), 0600); e != nil {
-		return e
-	}
-	if _, e = s.instances(provider); e != nil {
-		if previousError == nil {
-			atomic(tokenPath, previous, 0600)
-		} else {
-			os.Remove(tokenPath)
-		}
-		return errors.New("provider key validation failed; previous credentials were preserved")
-	}
 	db, e := s.readDB()
 	if e != nil {
 		return e
+	}
+	staging, e := os.MkdirTemp(s.Root, ".validate-key-")
+	if e != nil {
+		return e
+	}
+	defer os.RemoveAll(staging)
+	candidate := *s
+	candidate.Root = staging
+	if e = atomic(filepath.Join(staging, provider+".token"), []byte(token), 0600); e != nil {
+		return e
+	}
+	if _, e = candidate.instances(provider); e != nil {
+		return errors.New("provider key validation failed; existing credentials were not changed")
 	}
 	for key, rec := range db.Records {
 		if rec.Provider == provider {
@@ -70,30 +66,40 @@ func (s *Store) linkToken(provider, token string) error {
 			db.Records[key] = rec
 		}
 	}
-	return writeJSON(filepath.Join(s.Root, "resources.json"), db)
+	// Revoke old grants before another account's credential can become visible.
+	if e = writeJSON(filepath.Join(s.Root, "resources.json"), db); e != nil {
+		return e
+	}
+	return atomic(filepath.Join(s.Root, provider+".token"), []byte(token), 0600)
 }
 
 func (s *Store) rent(a RentArgs) (string, error) {
-	if !validProvider(a.Provider) || !namePattern.MatchString(a.Name) || !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./:@-]{0,511}$`).MatchString(a.Image) {
+	if !validProvider(a.Provider) || !namePattern.MatchString(a.Name) || !imagePattern.MatchString(a.Image) {
 		return "", errors.New("invalid rental configuration")
+	}
+	var runpodOffer []string
+	if a.Provider == "runpod" {
+		runpodOffer = strings.Split(a.ID, "|")
+		if len(runpodOffer) != 3 {
+			return "", errors.New("invalid RunPod offer")
+		}
 	}
 	search := Request{Op: "offers", Provider: a.Provider, ID: a.ID, Query: a.Query, Disk: a.Disk, Count: a.Count}
 	offers, e := s.offers(search)
 	if e != nil {
 		return "", e
 	}
-	var chosen *Offer
-	for _, o := range offers {
-		if o.ID == a.ID {
-			copy := o
-			chosen = &copy
+	var o Offer
+	found := false
+	for _, offer := range offers {
+		if offer.ID == a.ID {
+			o, found = offer, true
 			break
 		}
 	}
-	if chosen == nil {
+	if !found {
 		return "", fmt.Errorf("offer %s is unavailable for the selected GPU count and disk; refresh the market. No rental was submitted", a.ID)
 	}
-	o := *chosen
 	price := o.Hourly
 	extra := " + storage (not quoted)"
 	if o.DiskRate != nil {
@@ -102,6 +108,9 @@ func (s *Store) rent(a RentArgs) (string, error) {
 	}
 	if !validNumber(price) {
 		return "", errors.New("invalid quote")
+	}
+	if a.MaxHourly != nil && (!validNumber(*a.MaxHourly) || price > *a.MaxHourly+0.000001) {
+		return "", errors.New("the current quote exceeds the reviewed price; refresh before renting")
 	}
 	quote := fmt.Sprintf("RENT %s\n"+
 		"Provider: %s\n"+
@@ -130,8 +139,11 @@ func (s *Store) rent(a RentArgs) (string, error) {
 			if current.DiskRate != nil {
 				cost += float64(a.Disk) * (*current.DiskRate)
 			}
-			changed := current.Count != o.Count || current.GPU != o.GPU || current.VRAM != o.VRAM || current.Region != o.Region || current.Cloud != o.Cloud
-			if changed || current.DiskRate == nil && o.DiskRate != nil || !validNumber(cost) || cost > price+0.000001 {
+			changed := current.Count != o.Count || current.GPU != o.GPU || current.VRAM != o.VRAM ||
+				current.Region != o.Region ||
+				current.Cloud != o.Cloud
+			if changed || current.DiskRate == nil && o.DiskRate != nil || !validNumber(cost) ||
+				cost > price+0.000001 {
 				return "", errors.New("price or GPU conditions changed; refresh and retry")
 			}
 			freshFound = true
@@ -168,6 +180,7 @@ func (s *Store) rent(a RentArgs) (string, error) {
 		return "", e
 	}
 	db.Pending[pending] = true
+	db.Requests[pending] = Record{Provider: a.Provider, Name: a.Name, Key: key, Connecting: true}
 	if e = writeJSON(filepath.Join(s.Root, "resources.json"), db); e != nil {
 		return "", e
 	}
@@ -178,14 +191,10 @@ func (s *Store) rent(a RentArgs) (string, error) {
 			"label": a.Name, "runtype": "ssh_direct", "cancel_unavail": true,
 		})
 	} else {
-		parts := strings.Split(a.ID, "|")
-		if len(parts) != 3 {
-			return "", errors.New("invalid RunPod offer")
-		}
 		data, e = s.call("runpod", "POST", "/v2/pods", map[string]any{
 			"name": a.Name, "image": a.Image, "disk": a.Disk,
-			"gpu":   map[string]any{"id": parts[0], "count": o.Count},
-			"cloud": parts[1], "dataCenterIds": []string{parts[2]},
+			"gpu":   map[string]any{"id": runpodOffer[0], "count": o.Count},
+			"cloud": runpodOffer[1], "dataCenterIds": []string{runpodOffer[2]},
 			"ports": []string{"22/tcp"}, "startSsh": true,
 			"env": map[string]string{"PUBLIC_KEY": pub},
 		})
@@ -203,6 +212,7 @@ func (s *Store) rent(a RentArgs) (string, error) {
 	rec := Record{Provider: a.Provider, ID: id, Name: a.Name, Key: key, Connecting: true}
 	db.Records[keyOf(a.Provider, id)] = rec
 	db.Pending[pending] = false
+	delete(db.Requests, pending)
 	if e = writeJSON(filepath.Join(s.Root, "resources.json"), db); e != nil {
 		return id, e
 	}
@@ -210,8 +220,87 @@ func (s *Store) rent(a RentArgs) (string, error) {
 	return id, nil
 }
 
+// Recovery changes the journal and connection authority, never provider billing state.
+func (s *Store) recoverRental(provider, name, id string) error {
+	if !validProvider(provider) || !namePattern.MatchString(name) ||
+		id != "-" && !idPattern.MatchString(id) {
+		return errors.New("use recover PROVIDER NAME INSTANCE_ID, or '-' after verifying no allocation exists")
+	}
+	unlock, e := s.lock()
+	if e != nil {
+		return e
+	}
+	defer unlock()
+	db, e := s.readDB()
+	if e != nil {
+		return e
+	}
+	pending := provider + "/" + name
+	recorded := db.Pending[pending]
+	if id == "-" {
+		for _, rec := range db.Records {
+			if rec.Provider == provider && rec.Name == name {
+				recorded = true
+			}
+		}
+	}
+	if !recorded {
+		return errors.New("this rental has no protected request to recover")
+	}
+	rows, e := s.instances(provider)
+	if e != nil {
+		return e
+	}
+	found := false
+	for _, item := range rows {
+		if item.Name != name {
+			continue
+		}
+		if id == "-" {
+			return errors.New("an instance still has this rental name; recover its ID instead of clearing")
+		}
+		if item.ID == id {
+			found = true
+		}
+	}
+	if id != "-" {
+		if !found {
+			return errors.New("the provider did not return that ID with this rental name; no record changed")
+		}
+		if _, exists := db.Records[keyOf(provider, id)]; exists {
+			return errors.New("this instance already has a protected record; no record changed")
+		}
+		rec := db.Requests[pending]
+		if rec.Key == "" {
+			if provider == "runpod" {
+				return errors.New("this older RunPod receipt has no saved key association; recover manually before clearing it")
+			}
+			key, _, err := s.newKey(keyOf(provider, id) + "-" + strconv.FormatInt(time.Now().UnixNano(), 10))
+			if err != nil {
+				return err
+			}
+			rec.Key = key
+		}
+		if _, e = os.ReadFile(rec.Key + ".pub"); e != nil {
+			return e
+		}
+		rec.Provider, rec.Name, rec.ID, rec.Connecting = provider, name, id, true
+		db.Records[keyOf(provider, id)] = rec
+	}
+	delete(db.Pending, pending)
+	delete(db.Requests, pending)
+	if id == "-" {
+		for key, rec := range db.Records {
+			if rec.Provider == provider && rec.Name == name {
+				delete(db.Records, key)
+			}
+		}
+	}
+	return writeJSON(filepath.Join(s.Root, "resources.json"), db)
+}
+
 func (s *Store) mutate(provider, id, action string) error {
-	if !idPattern.MatchString(id) || !validProvider(provider) {
+	if !validProvider(provider) {
 		return errors.New("invalid resource")
 	}
 	i, e := s.instance(provider, id)

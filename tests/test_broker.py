@@ -6,7 +6,7 @@ import pytest
 
 from cloudrig import broker
 from cloudrig.demo import Demo
-from cloudrig.models import CrigError, Rental
+from cloudrig.models import CrigError, Rental, RentalNotSubmitted
 
 
 def test_privileged_calls_always_use_fresh_sudo_and_fixed_helper(monkeypatch):
@@ -26,14 +26,14 @@ def test_privileged_calls_always_use_fresh_sudo_and_fixed_helper(monkeypatch):
         assert argv[:4] == ["/usr/bin/sudo", "-k", "--", str(broker.HELPER)]
         assert "VAST_API_KEY" not in kwargs["env"]
         assert "SSH_AUTH_SOCK" not in kwargs["env"]
-        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["stdin"] is None
         assert kwargs.get("shell") is not True
 
 
 def test_mutations_do_not_go_through_read_service(monkeypatch):
     privileged, normal = [], []
     monkeypatch.setattr(broker, "admin", lambda *v: privileged.append(v) or {"id": "created"})
-    monkeypatch.setattr(broker, "rpc", lambda *a, **k: normal.append((a, k)))
+    monkeypatch.setattr(broker, "rpc", lambda *a, **k: normal.append((a, k)) or {"protocol": 3})
     api = broker.BrokerProvider("vastai")
     offer = Demo().offers("5090")[0]
     assert api.rent(Rental(offer, "training", 40, api.default_image)) == "created"
@@ -42,7 +42,7 @@ def test_mutations_do_not_go_through_read_service(monkeypatch):
     api.approve("1")
     api.stop("1")
     assert [row[0] for row in privileged] == ["rent", "start", "destroy", "approve"]
-    assert normal == [(("stop", "vastai"), {"id": "1"})]
+    assert normal == [(("health", "vastai"), {}), (("stop", "vastai"), {"id": "1"})]
 
 
 def test_user_owned_binary_path_is_not_a_trusted_helper(tmp_path):
@@ -81,5 +81,66 @@ def test_helper_never_accepts_arbitrary_command(monkeypatch):
 def test_missing_service_does_not_fall_back_to_environment_credentials(monkeypatch, tmp_path):
     monkeypatch.setattr(broker, "PUBLIC_ROOT", tmp_path / "missing")
     monkeypatch.setenv("RUNPOD_API_KEY", "a-real-looking-but-unused-key")
-    with pytest.raises(CrigError, match="Protected cloudrig service"):
+    with pytest.raises(CrigError, match="Cloudrig service is unavailable"):
         broker.BrokerProvider("runpod").instances()
+
+
+@pytest.mark.parametrize("recorded", ["absent", "pending", "allocated", "unavailable"])
+def test_failed_rental_is_retryable_only_when_the_protected_journal_confirms_no_submission(
+    recorded, monkeypatch
+):
+    def fail(*args, **kwargs):
+        raise CrigError("operation failed")
+
+    monkeypatch.setattr(broker, "admin", fail)
+
+    def rpc(operation, *args, **kwargs):
+        if operation == "health":
+            return {"protocol": 3}
+        if recorded == "unavailable":
+            fail()
+        return {"state": recorded}
+
+    monkeypatch.setattr(broker, "rpc", rpc)
+    api = broker.BrokerProvider("vastai")
+    with pytest.raises(CrigError) as error:
+        api.rent(Rental(Demo().offers("5090")[0], "training", 40, api.default_image))
+    assert isinstance(error.value, RentalNotSubmitted) == (recorded == "absent")
+    assert "operation failed" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "source, reason",
+    [
+        ("cloudrig-admin: offer disappeared; refresh and retry", "offer disappeared"),
+        ("cloudrig-admin: cancelled; nothing was submitted", "cancelled"),
+        ("sudo: a password is required", "a password is required"),
+    ],
+)
+def test_rental_failure_keeps_helper_reason_instead_of_hiding_it(monkeypatch, source, reason):
+    monkeypatch.setattr(broker, "trusted_root_path", lambda _: None)
+
+    def run(argv, **kwargs):
+        assert kwargs["stderr"] == subprocess.PIPE
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="RENT training\n" + source + "\n")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(
+        broker,
+        "rpc",
+        lambda operation, *a, **k: {"protocol": 3} if operation == "health" else {"state": "absent"},
+    )
+    api = broker.BrokerProvider("vastai")
+    with pytest.raises(RentalNotSubmitted) as error:
+        api.rent(Rental(Demo().offers("5090")[0], "training", 40, api.default_image))
+    assert reason in str(error.value)
+    assert "No rental was submitted" in str(error.value)
+    assert "RENT training" not in str(error.value)
+
+
+def test_old_helper_is_rejected_before_authentication_or_rental(monkeypatch):
+    monkeypatch.setattr(broker, "rpc", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(broker, "admin", lambda *a: pytest.fail("Invoked an incompatible helper"))
+    api = broker.BrokerProvider("vastai")
+    with pytest.raises(RentalNotSubmitted, match="reinstall"):
+        api.rent(Rental(Demo().offers("5090")[0], "training", 40, api.default_image))

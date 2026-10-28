@@ -1,4 +1,4 @@
-"""A short review before the existing protected rental flow."""
+"""Review a project's GPU requirements and price before rental."""
 
 from rich.table import Table
 from rich.text import Text
@@ -50,7 +50,7 @@ class WorkspaceApp(App[Offer | None]):
         p = self.project
         with VerticalScroll(id="page"):
             yield Static(
-                "▲  cloudrig   /   project workspace" + ("   /   DEMO" if self.demo else ""), id="brand"
+                "cloudrig   /   project workspace" + ("   /   Demo" if self.demo else ""), id="brand"
             )
             yield Static(Text(f"Open {p.name} on a GPU.", style="bold", overflow="fold"), id="title")
             yield Static(
@@ -84,7 +84,7 @@ class WorkspaceApp(App[Offer | None]):
             self.register_theme(theme)
         self.theme = "cloudrig"
         table = self.query_one(DataTable)
-        table.add_columns("GPU", "GB / GPU", "LOCATION", "USD / HR")
+        table.add_columns("GPU", "GB / GPU", "Location", "USD / hr")
         for row in self.offers:
             table.add_row(row.title, f"{row.vram:g}", row.region, f"${row.total(self.project.disk):.3f}")
         self.query_one("#launch", Button).disabled = not self.offers
@@ -112,7 +112,7 @@ class WorkspaceApp(App[Offer | None]):
             row = self.offers[self.selected]
             total = row.total(p.disk)
             compact = self.size.width < 100
-            summary = Text("SESSION ESTIMATE  " if compact else "SESSION ESTIMATE\n\n", style=colors["muted"])
+            summary = Text("Session estimate  " if compact else "Session estimate\n\n", style=colors["muted"])
             summary.append(f"${total * p.hours:.2f}", style=f"bold {colors['primary']}")
             summary.append(f" / {p.hours:g} hours" + ("  ·  " if compact else "\n\n"))
             summary.append(f"${total:.3f}/hr with quoted disk")
@@ -129,7 +129,7 @@ class WorkspaceApp(App[Offer | None]):
         if self.size.width >= 100:
             grid.add_row("Project", Text(str(p.root)))
         grid.add_row("Remote folder", Text(p.remote))
-        grid.add_row("First connection", "Upload project → check CUDA → open VS Code")
+        grid.add_row("First connection", "Upload the project, check the GPU, and open VS Code.")
         grid.add_row("Next connection", "Reuse GPU and remote files. No automatic upload.")
         grid.add_row(
             "Dependencies",
@@ -141,7 +141,9 @@ class WorkspaceApp(App[Offer | None]):
         )
         if self.size.width >= 100:
             grid.add_row("Image", Text(p.image))
-            grid.add_row("Upload exclusions", ".env*, private keys, cloud credentials, .git, .venv, caches")
+            grid.add_row("Upload exclusions", "Git ignores, .crigignore, and built-in filename rules")
+            grid.add_row("Review files", Text(f"crig plan {str(p.root)!r} --files"))
+        grid.add_row("GPU check", "NVIDIA driver" + (" and PyTorch CUDA" if p.framework == "pytorch" else ""))
         self.query_one("#details", Static).update(grid)
 
     @on(DataTable.RowSelected)

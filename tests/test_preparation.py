@@ -1,11 +1,15 @@
 import json
+import os
 import subprocess
 import time
 from contextlib import nullcontext
+from dataclasses import asdict
+from textwrap import dedent
 
 import pytest
 
 from cloudrig import preparation, state
+from cloudrig.models import CrigError
 from cloudrig.preparation import Preparation, read_status
 from cloudrig.project import Binding, Phase, Project, project_lock, save_receipt
 
@@ -21,9 +25,7 @@ def wait_for(condition, timeout=10):
 
 @pytest.mark.parametrize("failed", [False, True])
 @pytest.mark.parametrize("project_job", [False, True])
-def test_detached_setup_reuses_one_worker_and_reports_completion(
-    tmp_path, monkeypatch, failed, project_job
-):
+def test_detached_setup_reuses_one_worker_and_reports_completion(tmp_path, monkeypatch, failed, project_job):
     release = tmp_path / "release"
     opened = tmp_path / "opened"
     notification = tmp_path / "notification"
@@ -31,29 +33,49 @@ def test_detached_setup_reuses_one_worker_and_reports_completion(
     connected = tmp_path / "connected"
     driver = tmp_path / "worker.py"
     driver.write_text(
-        "import os,sys,time\nfrom pathlib import Path\n"
-        "from cloudrig import preparation\nfrom cloudrig.demo import Demo\n"
-        "from cloudrig.models import CrigError\n"
-        "class ReadOnlyProvider:\n"
-        f" def __init__(self,name): Path({str(connected)!r}).touch()\n"
-        " def rent(self,*args): raise AssertionError('Worker attempted a rental')\n"
-        " def start(self,*args): raise AssertionError('Worker attempted a paid start')\n"
-        " def instance(self,identifier): return Demo().instances()[0]\n"
-        "def ready(api,identifier,**options):\n"
-        f" Path({str(session)!r}).write_text(str(os.getsid(0)==os.getpid()))\n"
-        " options['progress']('Running startup script')\n"
-        f" while not Path({str(release)!r}).exists(): time.sleep(.02)\n"
-        f" if {failed!r}: raise CrigError('Startup failed')\n"
-        " return Demo().instances()[0]\n"
-        "preparation.BrokerProvider=ReadOnlyProvider\npreparation.wait_ready=ready\n"
-        "from cloudrig import workspace\n"
-        "def prepare(project,api,binding,options,**kwargs):\n"
-        " assert binding.id=='42' and not options.open_editor\n"
-        " ready(api,binding.id,**kwargs)\n"
-        "workspace.prepare=prepare\n"
-        f"preparation.open_code=lambda item,path: Path({str(opened)!r}).write_text(path)\n"
-        f"preparation.notify=lambda title,message: Path({str(notification)!r}).write_text(title)\n"
-        "sys.exit(preparation.run(Path(sys.argv[1])))\n"
+        dedent(f"""\
+        import os
+        import sys
+        import time
+        from pathlib import Path
+
+        from cloudrig import preparation, workspace
+        from cloudrig.demo import Demo
+        from cloudrig.models import CrigError
+
+        class ReadOnlyProvider:
+            def __init__(self, name):
+                Path({str(connected)!r}).touch()
+
+            def rent(self, *args):
+                raise AssertionError("Worker attempted a rental")
+
+            def start(self, *args):
+                raise AssertionError("Worker attempted a paid start")
+
+            def instance(self, identifier):
+                return Demo().instances()[0]
+
+        def ready(api, identifier, **options):
+            Path({str(session)!r}).write_text(str(os.getsid(0) == os.getpid()))
+            options["progress"]("Running startup script")
+            while not Path({str(release)!r}).exists():
+                time.sleep(0.02)
+            if {failed!r}:
+                raise CrigError("Startup failed")
+            return Demo().instances()[0]
+
+        def prepare(project, api, binding, options, **kwargs):
+            assert binding.id == "42" and not options.open_editor
+            ready(api, binding.id, **kwargs)
+
+        preparation.BrokerProvider = ReadOnlyProvider
+        preparation.wait_ready = ready
+        workspace.prepare = prepare
+        preparation.open_code = lambda item, path: Path({str(opened)!r}).write_text(path)
+        preparation.notify = lambda title, message: Path({str(notification)!r}).write_text(title)
+        sys.exit(preparation.run(Path(sys.argv[1])))
+        """)
     )
     actual_popen = subprocess.Popen
     processes = []
@@ -87,6 +109,14 @@ def test_detached_setup_reuses_one_worker_and_reports_completion(
         assert processes[0].wait(timeout=10) == int(failed)
         status = read_status(folder)
         assert status["phase"] == ("failed" if failed else "ready")
+        assert [event["step"] for event in status["history"][:2]] == [
+            "Waiting for the GPU",
+            "Running startup script",
+        ]
+        assert status["history"][-1]["step"] == ("Startup failed" if failed else "Ready")
+        assert [event["at"] for event in status["history"]] == sorted(
+            event["at"] for event in status["history"]
+        )
         assert notification.read_text() == ("Cloudrig setup failed" if failed else "Cloudrig ready")
         assert opened.exists() != failed
         if not failed:
@@ -131,3 +161,57 @@ def test_notification_passes_text_as_data_and_delivery_failure_is_nonfatal(monke
     message = 'name " & do shell script "unexpected"'
     preparation.notify("Cloudrig ready", message)
     assert calls[0][-1] == message and message not in calls[0][2]
+
+
+def test_active_setup_rejects_a_different_project_instead_of_losing_the_request(tmp_path):
+    job = Preparation("vastai", "42", "training")
+    folder = preparation.directory("vastai", "42")
+    preparation.private_directory(folder.parent)
+    preparation.private_directory(folder)
+    state.atomic_write(folder / "job.json", json.dumps(asdict(job)))
+    state.atomic_write(folder / "status.json", json.dumps({"phase": "queued", "pid": os.getpid()}))
+    assert preparation.start(job) == folder
+    project = Project(tmp_path, "other")
+    with pytest.raises(CrigError, match="different setup"):
+        preparation.start(Preparation("vastai", "42", "training", project=project))
+    assert json.loads((folder / "job.json").read_text())["project"] is None
+
+
+def test_unexpected_worker_error_keeps_safe_diagnostic_locations(monkeypatch):
+    job = Preparation("vastai", "42", "training")
+    folder = preparation.directory("vastai", "42")
+    preparation.private_directory(folder.parent)
+    preparation.private_directory(folder)
+    state.atomic_write(folder / "job.json", json.dumps(asdict(job)))
+    state.atomic_write(folder / "status.json", json.dumps({"phase": "queued"}))
+
+    def fail(_):
+        raise RuntimeError("PRIVATE_TOKEN")
+
+    monkeypatch.setattr(preparation, "BrokerProvider", fail)
+    monkeypatch.setattr(preparation, "notify", lambda *a: None)
+    assert preparation.run(folder) == 1
+    status = (folder / "status.json").read_text()
+    assert "PRIVATE_TOKEN" not in status
+    assert json.loads(status)["diagnostic"]["type"] == "RuntimeError"
+    assert json.loads(status)["diagnostic"]["frames"][-1]["function"] == "fail"
+
+
+def test_reconnect_restarts_abandoned_setup_even_when_its_pid_is_alive(monkeypatch):
+    from types import SimpleNamespace
+
+    job = Preparation("vastai", "42", "training")
+    folder = preparation.directory("vastai", "42")
+    preparation.private_directory(folder.parent)
+    preparation.private_directory(folder)
+    state.atomic_write(folder / "job.json", json.dumps(asdict(job)))
+    state.atomic_write(folder / "status.json", json.dumps({"phase": "preparing", "pid": os.getpid()}))
+    children = []
+    monkeypatch.setattr(
+        preparation.subprocess,
+        "Popen",
+        lambda *a, **k: children.append(a) or SimpleNamespace(pid=os.getpid()),
+    )
+    assert preparation.start(job) == folder
+    assert len(children) == 1
+    assert read_status(folder)["phase"] == "queued"

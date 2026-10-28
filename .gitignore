@@ -5,3 +5,7 @@ __pycache__/
 *.egg-info/
 dist/
 .env
+.env.*
+!.env.example
+!.env.template
+.DS_Store

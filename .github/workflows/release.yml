@@ -1,0 +1,96 @@
+name: Release packages
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        system: [darwin, linux]
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: admin/go.mod
+          cache-dependency-path: admin/go.sum
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag and package version differ'
+          PY
+      - name: Build platform wheel
+        env:
+          GOOS: ${{ matrix.system }}
+          GOARCH: ${{ matrix.arch }}
+        run: uv build --wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.system }}-${{ matrix.arch }}
+          path: dist/*.whl
+
+  attest:
+    needs: wheel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+      - name: Verify published build identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          for wheel in dist/*.whl; do
+            gh attestation verify "$wheel" --repo "$RELEASE_REPOSITORY" \
+              --signer-workflow "$RELEASE_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "$GITHUB_REF" --deny-self-hosted-runners
+          done
+      - name: Record checksums
+        run: cd dist && sha256sum *.whl > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-wheels
+          path: dist/*
+
+  draft-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-release-wheels
+          path: dist
+      - name: Create a draft for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* --repo "$RELEASE_REPOSITORY" \
+            --verify-tag --draft --title "Cloudrig $RELEASE_TAG" --generate-notes

@@ -6,7 +6,7 @@ from textual.widgets import Button, DataTable, Static
 
 from cloudrig import state, workspace, workspace_cli
 from cloudrig.demo import Demo
-from cloudrig.models import CrigError
+from cloudrig.models import CrigError, RentalNotSubmitted
 from cloudrig.project import Binding, Phase, candidates, load_project, project_lock, receipt, save_receipt
 from cloudrig.workspace_tui import WorkspaceApp
 
@@ -87,6 +87,8 @@ def test_concurrent_up_cannot_submit_another_rental(project, monkeypatch):
         "[workspace]\nunknown = 1",
         '[workspace]\nprovider = "other"',
         "[workspace]\nregion = 1",
+        '[workspace]\nframework = ["none"]',
+        '[workspace]\nframework = { value = "none" }',
     ],
 )
 def test_invalid_requirements_fail_before_provider_access(project, content):
@@ -211,6 +213,7 @@ def test_reconnect_skips_upload_even_after_cuda_probe_failure(project, monkeypat
 
 
 def test_ready_reconnect_preserves_python_environment_and_remote_files(project, monkeypatch):
+    project = replace(project, framework="pytorch")
     save_receipt(project, Binding(Phase.READY, id="demo-01", python=".venv/bin/python", setup_complete=True))
     api, commands = Demo(), []
     monkeypatch.setattr(workspace, "wait_ready", lambda *a, **kw: api.instance("demo-01"))
@@ -246,7 +249,11 @@ def test_missing_bound_instance_never_falls_back_to_rental(project, monkeypatch)
     monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
     monkeypatch.setattr(workspace_cli, "preflight", lambda **kwargs: None)
     monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Rented a replacement"), raising=False)
-    monkeypatch.setattr(api, "instance", lambda _: (_ for _ in ()).throw(CrigError("Missing instance")))
+
+    def missing_instance(_):
+        raise CrigError("Missing instance")
+
+    monkeypatch.setattr(api, "instance", missing_instance)
     with pytest.raises(CrigError, match="Missing instance"):
         workspace_cli.dispatch(["up", str(project.root), "--offer", "84021", "--no-code"])
 
@@ -285,3 +292,62 @@ async def test_empty_review_cannot_launch(project):
         await pilot.pause()
         assert app.query_one("#launch", Button).disabled
         assert "No complete quotes" in str(app.query_one("#summary", Static).render())
+
+
+def test_cancelled_authentication_does_not_leave_an_unresolved_binding(project, monkeypatch):
+    api = Demo()
+    monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
+    monkeypatch.setattr(workspace_cli, "preflight", lambda **kwargs: None)
+    monkeypatch.setattr(workspace_cli, "prompt_confirm", lambda _: None)
+
+    def cancel(_):
+        raise RentalNotSubmitted("Cancelled before submission")
+
+    monkeypatch.setattr(api, "rent", cancel, raising=False)
+    with pytest.raises(RentalNotSubmitted):
+        workspace_cli.dispatch(["up", str(project.root), "--offer", "84021", "--no-code"])
+    assert receipt(project) is None
+
+
+def test_down_uses_the_saved_provider_after_the_global_preference_changes(project, monkeypatch):
+    save_receipt(project, Binding(Phase.READY, id="demo-01"))
+    state.update(provider="runpod")
+    selected = []
+    api = Demo()
+    monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda p: selected.append(p) or api)
+    monkeypatch.setattr(workspace_cli, "prompt_confirm", lambda _: None)
+    stopped = []
+    monkeypatch.setattr(api, "stop", stopped.append, raising=False)
+    workspace_cli.dispatch(["down", str(project.root)])
+    assert selected == ["vastai"] and stopped == ["demo-01"]
+
+
+def test_runpod_project_launch_reports_unsupported_pricing_before_search(project, monkeypatch):
+    monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda p: Demo())
+    monkeypatch.setattr(Demo, "offers", lambda *a: pytest.fail("Searched unsupported project quotes"))
+    with pytest.raises(CrigError, match="not supported"):
+        workspace_cli.dispatch(["up", str(project.root), "--provider", "runpod", "--no-code"])
+
+
+def test_project_browser_returns_to_dashboard_after_background_launch(project, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    api = Demo()
+    monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
+    monkeypatch.setattr(WorkspaceApp, "run", lambda self: self.offers[0])
+    monkeypatch.setattr(workspace_cli, "preflight", lambda **k: None)
+    monkeypatch.setattr(workspace_cli, "upload_flags", lambda _: [])
+    monkeypatch.setattr(workspace_cli, "launch", lambda *a: Binding(Phase.PREPARING, id="demo-01"))
+    opened = []
+
+    def dashboard(api, args, startup, **kw):
+        from cloudrig.project import project_lock
+
+        with project_lock(project):
+            opened.append(SimpleNamespace(args=args, **kw))
+
+    monkeypatch.setattr("cloudrig.cli.dashboard", dashboard)
+    workspace_cli.dispatch(["up", str(project.root), "--no-code"])
+    assert len(opened) == 1 and opened[0].selected_id == "demo-01"
+    assert opened[0].args.rented and opened[0].args.no_code

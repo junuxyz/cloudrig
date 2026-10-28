@@ -1,4 +1,4 @@
-"""Prepare an allocated GPU in a separate ordinary-user process."""
+"""Prepare a rented GPU in a background process under the local user's account."""
 
 import json
 import os
@@ -14,9 +14,9 @@ from filelock import FileLock, Timeout
 from cloudrig import state
 from cloudrig.broker import BrokerProvider
 from cloudrig.connections import open_code, wait_ready
-from cloudrig.models import CrigError, instance_id, provider_name
+from cloudrig.models import CrigError, instance_id, number, provider_name, safe_text
 from cloudrig.project import Project, project_lock, receipt
-from cloudrig.security import child_environment, private_directory, regular_file
+from cloudrig.security import child_environment, private_directory, regular_file, safe_diagnostic
 from cloudrig.terminal import console
 
 
@@ -52,20 +52,60 @@ def read_status(folder: Path) -> dict:
     return record
 
 
+def statuses(provider: str) -> dict[str, dict]:
+    """Read saved preparation progress without contacting a provider."""
+    provider_name(provider)
+    root = state.config_dir() / "preparations"
+    if not root.exists():
+        return {}
+    private_directory(root)
+    result = {}
+    for folder in root.glob(f"{provider}-*"):
+        private_directory(folder)
+        record = read_status(folder)
+        if record:
+            identifier = instance_id(record["id"])
+            if record["phase"] not in {"queued", "preparing", "ready", "failed", "interrupted"}:
+                raise CrigError("Unknown preparation phase.")
+            safe_text(record["name"])
+            safe_text(record["step"])
+            number(record["started"])
+            if "finished" in record:
+                number(record["finished"])
+            for event in record.get("history", []):
+                safe_text(event["step"])
+                number(event["at"])
+            if record["provider"] != provider or folder.name != f"{provider}-{identifier}":
+                raise CrigError("Preparation record does not match its directory.")
+            result[identifier] = record
+    return result
+
+
 def start(job: Preparation) -> Path:
     folder = directory(job.provider, job.identifier)
     private_directory(folder.parent)
     private_directory(folder)
     lock = folder / "worker.lock"
     regular_file(lock, private=True)
+    payload = asdict(job)
+    if job.project:
+        payload["project"]["root"] = str(job.project.root)
+
+    def existing() -> Path:
+        regular_file(folder / "job.json", private=True)
+        if json.loads((folder / "job.json").read_text()) != payload:
+            raise CrigError(
+                "A different setup is running on this GPU. Wait for it to finish, then try again."
+            )
+        return folder
+
     try:
         with FileLock(lock, timeout=0, mode=0o600):
             previous = read_status(folder)
-            if previous.get("phase") in {"queued", "preparing"}:
-                return folder
-            payload = asdict(job)
-            if job.project:
-                payload["project"]["root"] = str(job.project.root)
+            if previous.get("phase") == "queued":
+                return existing()
+            # A preparing worker holds this lock. Acquiring it proves the old worker ended,
+            # even if the operating system has already reused its PID.
             state.atomic_write(folder / "job.json", json.dumps(payload))
             state.atomic_write(folder / "setup.log", "")
             environment = child_environment()
@@ -95,7 +135,7 @@ def start(job: Preparation) -> Path:
                 ),
             )
     except Timeout:
-        pass  # The existing worker already owns this instance's setup.
+        return existing()
     return folder
 
 
@@ -117,22 +157,31 @@ def notify(title: str, message: str) -> None:
         pass  # Notification delivery does not change the preparation result.
 
 
-def run(folder: Path) -> int:
+def read_job(folder: Path) -> Preparation:
     regular_file(folder / "job.json", private=True)
     payload = json.loads((folder / "job.json").read_text())
-    if project := payload.pop("project"):
+    if project := payload.pop("project", None):
         project["root"] = Path(project["root"])
         project = Project(**project)
     job = Preparation(**payload, project=project)
     if directory(job.provider, job.identifier) != folder:
         raise CrigError("Invalid preparation directory.")
+    return job
+
+
+def run(folder: Path) -> int:
+    job = read_job(folder)
     with FileLock(folder / "worker.lock", timeout=10, mode=0o600):
         record = read_status(folder)
 
-        def progress(message: str):
-            if record.get("step") == message:
+        def progress(message: str, *, phase: str = "preparing"):
+            if record.get("step") == message and record.get("phase") == phase:
                 return
-            record.update(phase="preparing", step=message)
+            timestamp = time.time()
+            record.update(phase=phase, step=message)
+            record.setdefault("history", []).append({"step": message, "at": timestamp})
+            if phase in {"ready", "failed"}:
+                record["finished"] = timestamp
             state.atomic_write(folder / "status.json", json.dumps(record))
             console.print(message, markup=False)
 
@@ -165,24 +214,25 @@ def run(folder: Path) -> int:
             if job.code_path is not None:
                 progress("Opening VS Code")
                 open_code(item, job.code_path)
-            record.update(phase="ready", step="Ready", finished=time.time())
-            state.atomic_write(folder / "status.json", json.dumps(record))
+            progress("Ready", phase="ready")
             notify("Cloudrig ready", f"{job.name} is ready.")
             return 0
         except Exception as error:
-            message = (
-                str(error) if isinstance(error, CrigError) else "Setup failed; diagnostic details withheld"
-            )
-            record.update(phase="failed", step=message, finished=time.time())
-            state.atomic_write(folder / "status.json", json.dumps(record))
-            console.print(message, markup=False)
-            notify("Cloudrig setup failed", f"{job.name}: run crig status to inspect setup.")
+            if isinstance(error, CrigError):
+                message = str(error)
+            else:
+                message = "Setup failed. Include the diagnostic below in a bug report."
+                record["diagnostic"] = safe_diagnostic(error)
+                console.print(json.dumps(record["diagnostic"]), markup=False)
+            progress(message, phase="failed")
+            notify("Cloudrig setup failed", f"{job.name}: open crig to inspect setup.")
             return 1
 
 
 def show_status(target: str | None = None) -> None:
     root = state.config_dir() / "preparations"
     found = False
+    shown = set()
     if root.exists():
         for folder in sorted(root.iterdir()):
             if not folder.is_dir():
@@ -191,6 +241,7 @@ def show_status(target: str | None = None) -> None:
             if not record or target and target not in {record["id"], record["name"]}:
                 continue
             found = True
+            shown.add((record["provider"], record["id"]))
             elapsed = max(0, int(record.get("finished", time.time()) - record["started"]))
             console.print(
                 f"{record['name']} ({record['provider']}/{record['id']}) · "
@@ -198,8 +249,28 @@ def show_status(target: str | None = None) -> None:
                 markup=False,
             )
             console.print(f"Step: {record['step']}\nLog: {folder / 'setup.log'}", markup=False)
+            if diagnostic := record.get("diagnostic"):
+                console.print(f"Diagnostic: {json.dumps(diagnostic)}", markup=False)
+    for binding in state.load().get("projects", {}).values():
+        if not binding.get("root"):
+            continue
+        name = Path(binding["root"]).name
+        if target and target not in {name, binding.get("id"), binding["root"]}:
+            continue
+        if (binding["provider"], binding.get("id")) in shown:
+            continue
+        found = True
+        console.print(
+            f"Project {name} · {binding['provider']}/{binding.get('id') or 'unknown ID'} · "
+            f"{binding['phase']}\nLocal folder: {binding['root']}",
+            markup=False,
+        )
+        if not binding.get("id"):
+            console.print(
+                "Check the provider console before retrying. Run crig up in this folder for recovery steps."
+            )
     if not found:
-        console.print("No background setup found.")
+        console.print("No saved workspace or background setup found.")
 
 
 if __name__ == "__main__":

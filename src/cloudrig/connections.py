@@ -1,8 +1,10 @@
 import ipaddress
+import os
 import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from importlib.resources import files
@@ -11,7 +13,7 @@ from pathlib import Path
 from filelock import FileLock
 
 from cloudrig import broker
-from cloudrig.models import CrigError, Instance, safe_text
+from cloudrig.models import CrigError, Instance, RateLimited, safe_text
 from cloudrig.security import check_transfer_path, child_environment, private_directory, regular_file
 from cloudrig.state import atomic_write
 
@@ -84,7 +86,6 @@ def verify_grant(instance: Instance) -> tuple[Path, Path, Path]:
 
 def install_alias(instance: Instance) -> str:
     validate_endpoint(instance)
-    require("ssh")
     public, agent, known = verify_grant(instance)
     ssh_dir = Path.home() / ".ssh"
     private_directory(ssh_dir)
@@ -175,7 +176,26 @@ def wait_ready(
     if progress:
         progress("Waiting for the GPU")
     while True:
-        item = provider.instance(identifier)
+        if time.monotonic() >= deadline:
+            raise CrigError(
+                f"Instance {identifier} remains rented; connection setup timed out. "
+                f"Retry with crig {identifier} code."
+            )
+        try:
+            item = provider.instance(identifier)
+        except RateLimited as error:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CrigError(
+                    f"Provider is still limiting requests. Instance {identifier} remains rented. "
+                    f"Retry its connection with crig {identifier} code."
+                ) from None
+            if progress:
+                progress(str(error))
+            time.sleep(min(error.seconds, remaining))
+            if progress:
+                progress("Waiting for the GPU")
+            continue
         if item.status in {"error", "failed", "terminated", "exited", "stopped"}:
             raise CrigError(f"Instance {identifier} is {item.status}. Inspect it with crig --rented.")
         if (
@@ -220,7 +240,7 @@ def wait_ready(
                 f"Instance {identifier} is still rented; SSH is not ready. "
                 f"Reconnect with crig {identifier} ssh. No second instance was created."
             )
-        time.sleep(3)
+        time.sleep(10)
 
 
 def full_ssh(instance: Instance) -> None:
@@ -264,7 +284,91 @@ SECRET_EXCLUDES = (
     "*.key",
     "credentials.json",
     "service-account*.json",
+    "secrets.*",
+    "*.secrets",
 )
+
+
+def upload_flags(local: Path) -> list[str]:
+    patterns = list(SECRET_EXCLUDES)
+    root = local if local.is_dir() else local.parent
+    ignore = root / ".crigignore"
+    if ignore.exists() or ignore.is_symlink():
+        if ignore.is_symlink() or not ignore.is_file():
+            raise CrigError(".crigignore must be a regular file inside the project.")
+        for pattern in ignore.read_text().splitlines():
+            pattern = pattern.strip()
+            if pattern and not pattern.startswith("#"):
+                if pattern.startswith("!"):
+                    raise CrigError(".crigignore supports exclusion patterns only, without ! reinclusions.")
+                patterns.append(pattern)
+    git = shutil.which("git")
+    in_repository = any((parent / ".git").exists() for parent in (root, *root.parents))
+    if git:
+        try:
+            ignored = subprocess.run(
+                [
+                    git,
+                    "-c",
+                    "core.fsmonitor=false",
+                    "ls-files",
+                    "--others",
+                    "--ignored",
+                    "--exclude-standard",
+                    "--directory",
+                    "-z",
+                    "--",
+                    ".",
+                ],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=20,
+                env=child_environment(),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise CrigError(
+                "Git upload exclusions timed out. Check the repository before uploading."
+            ) from error
+        if ignored.returncode == 0:
+            for name in os.fsdecode(ignored.stdout).split("\0"):
+                if name:
+                    escaped = re.sub(r"([\\*?\[])", r"\\\1", name)
+                    patterns.append("/" + escaped)
+        elif in_repository:
+            raise CrigError("Cannot read Git upload exclusions. Repair Git before uploading.")
+    elif in_repository:
+        raise CrigError("Install git to apply this project's upload exclusions.")
+    return [f"--filter=- {pattern}" for pattern in patterns]
+
+
+def preview_upload(root: Path) -> None:
+    from cloudrig.terminal import console
+
+    check_rsync()
+    flags = upload_flags(root)
+    with tempfile.TemporaryDirectory(prefix="cloudrig-upload-") as target:
+        result = subprocess.run(
+            [
+                require("rsync"),
+                "-rln",
+                "--safe-links",
+                "--out-format=%n",
+                *flags,
+                "--",
+                str(root) + "/",
+                target + "/",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            env=child_environment(),
+        )
+    if result.returncode:
+        raise CrigError("Cannot preview this upload. Check file permissions and ignore patterns.")
+    console.print(result.stdout or "No files to upload.", markup=False)
+    console.print("Preview only. No remote files changed. Filename rules do not detect every secret.")
 
 
 def default_startup_script() -> str:
@@ -357,7 +461,6 @@ def sync_command(
         raise CrigError("Use an absolute remote path, for example /workspace/project/.")
     check_transfer_path(Path(local).expanduser().resolve())
     name = install_alias(instance)
-    require("rsync")
     check_rsync()
     check_remote_rsync(name)
     endpoint = f"{name}:{remote}"
@@ -366,7 +469,7 @@ def sync_command(
     if dry_run:
         argv.append("--dry-run")
     if upload:
-        argv.extend(f"--exclude={pattern}" for pattern in SECRET_EXCLUDES)
+        argv.extend(upload_flags(Path(local).expanduser().resolve()))
     argv.extend(
         ["--", str(Path(local).expanduser().absolute()), endpoint]
         if upload

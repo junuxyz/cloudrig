@@ -6,12 +6,13 @@ import shlex
 import sys
 from dataclasses import asdict, replace
 
+from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
 
 from cloudrig import state
 from cloudrig.broker import BrokerProvider
-from cloudrig.connections import load_startup_script
+from cloudrig.connections import load_startup_script, upload_flags
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError, Offer, Rental, instance_id
 from cloudrig.project import (
@@ -19,6 +20,7 @@ from cloudrig.project import (
     Binding,
     Phase,
     Project,
+    bound_provider,
     candidates,
     forget_receipt,
     load_project,
@@ -55,9 +57,12 @@ def parser() -> argparse.ArgumentParser:
         )
         cmd.add_argument("--region", help="Location substring filter, such as JP. No inferred latency.")
         cmd.add_argument("--image", help="Container image override")
+        cmd.add_argument("--framework", choices=("none", "pytorch"), help="Optional framework CUDA check")
+        cmd.add_argument("--files", action="store_true", help="Preview local upload files; never rent")
         cmd.add_argument(
             "--startup", metavar="FILE", help="Replace the default startup with this Bash script"
         )
+        cmd.add_argument("--numbered", action="store_true", help="Choose a GPU with numbered prompts")
         cmd.add_argument("--plain", action="store_true", help="Print plan without the interactive review")
         cmd.add_argument("--json", action="store_true", help="Print plan as JSON; never rent")
         cmd.add_argument("--offer", help="Review this exact matching offer in a terminal")
@@ -74,7 +79,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def show_plan(project: Project, rows: list[Offer], binding: Binding | None, setup: bool) -> None:
-    console.print(Text(f"\n▲ cloudrig / {project.name}", style="bold #fab283"))
+    console.print(Text(f"\ncloudrig / {project.name}", style="bold #fab283"))
     console.print(
         Text(f"{project.vram:g}+ GB / GPU · {project.count} GPU · ${project.max_hourly:g}/hr ceiling")
     )
@@ -82,7 +87,7 @@ def show_plan(project: Project, rows: list[Offer], binding: Binding | None, setu
         console.print(Text(f"Existing workspace: {binding.id or 'submission unresolved'} · {binding.phase}"))
         console.print("crig up reconnects to this allocation. It does not rent a replacement.")
     table = Table(box=None)
-    for column in ("OFFER", "GPU", "GB / GPU", "LOCATION", "USD / HR", f"{project.hours:g} H EST."):
+    for column in ("Offer", "GPU", "GB / GPU", "Location", "USD / hr", f"{project.hours:g} H EST."):
         table.add_column(column)
     for row in rows:
         total = row.total(project.disk)
@@ -100,10 +105,11 @@ def show_plan(project: Project, rows: list[Offer], binding: Binding | None, setu
     console.print(Text(f"Remote: {project.remote}\nImage: {project.image}"))
     if project.startup:
         console.print(Text(f"Startup: {project.startup}"))
-    console.print("First up: SSH → upload → CUDA check → VS Code. Next up: reconnect without upload.")
+    console.print("The first up uploads the project, checks the GPU, and opens VS Code.")
+    console.print("Later up commands reconnect without uploading.")
     if setup and project.setup:
         console.print(Text(f"Remote dependency install: {shlex.join(project.setup)}"))
-    console.print("Hours are an estimate, not a shutdown timer. Transfer and later storage costs are extra.")
+    console.print("The hour estimate does not stop billing. Storage and transfers may cost extra.")
 
 
 def init_project(project: Project, demo: bool) -> None:
@@ -130,6 +136,45 @@ def init_project(project: Project, demo: bool) -> None:
     console.print(Text(f"Created {manifest}. Review with crig plan; launch with crig up."))
 
 
+def choose_offer(project: Project, rows: list[Offer], *, setup: bool, numbered: bool, demo: bool = False):
+    if not sys.stdin.isatty():
+        raise CrigError("Review requires a terminal. Use crig plan --json for a read-only plan.")
+    if not numbered:
+        return WorkspaceApp(project, rows, demo=demo, setup=setup).run()
+    page = 0
+    while True:
+        visible = rows[page : page + 5]
+        console.print("\nChoose a GPU. Prices include the requested disk.")
+        for index, row in enumerate(visible, 1):
+            console.print(
+                Text(
+                    f"{index}. {row.title}, {row.vram:g} GB per GPU, "
+                    f"{row.region}, ${row.total(project.disk):.3f}/hr"
+                )
+            )
+        more = len(rows) > 5
+        if more:
+            console.print("6. More offers")
+        console.print("0. Cancel")
+        choices = ["0", *[str(i) for i in range(1, len(visible) + 1)]]
+        if more:
+            choices.append("6")
+        selected = Prompt.ask("Choose", choices=choices)
+        if selected == "0":
+            return None
+        if selected == "6":
+            page = page + 5 if page + 5 < len(rows) else 0
+            continue
+        offer = visible[int(selected) - 1]
+        show_plan(project, [offer], None, setup)
+        prompt_confirm(
+            "Finish this demo? No GPU will be rented."
+            if demo
+            else "Rent this GPU and upload this project? Billing starts on rental."
+        )
+        return offer
+
+
 def select_target(project: Project, api, args: argparse.Namespace) -> Rental | Binding | None:
     binding = receipt(project)
     if args.attach:
@@ -142,6 +187,12 @@ def select_target(project: Project, api, args: argparse.Namespace) -> Rental | B
         prompt_confirm("Bind this instance and upload the project? Matching remote files can be overwritten.")
         return save_receipt(project, Binding(Phase.PREPARING, id=item.id))
     if binding:
+        if binding.id is None:
+            raise CrigError(
+                f"Rental submission unresolved. Check the provider console, then use "
+                f"crig recover {project.rental_name} --attach ID and crig up --attach ID. "
+                f"If no instance exists, use crig recover {project.rental_name} --clear, then crig forget."
+            )
         if binding.needs_upload:
             prompt_confirm("Finish initial upload? Local files can overwrite matching remote files.")
         return binding
@@ -156,9 +207,7 @@ def select_target(project: Project, api, args: argparse.Namespace) -> Rental | B
         show_plan(project, [offer], None, args.setup)
         prompt_confirm("Upload this project to the reviewed GPU and prepare its workspace?")
     else:
-        if not sys.stdin.isatty():
-            raise CrigError("Review requires a terminal. Use crig plan --json for a read-only plan.")
-        offer = WorkspaceApp(project, rows, setup=args.setup).run()
+        offer = choose_offer(project, rows, setup=args.setup, numbered=args.numbered)
         if offer is None:
             return None
     return Rental(offer, project.rental_name, project.disk, project.image)
@@ -169,6 +218,10 @@ def dispatch(argv):
     default_provider = "vastai" if args.demo else state.load().get("provider", "vastai")
     overrides = {key: getattr(args, key, None) for key in SETTINGS}
     project = load_project(args.path, default_provider=default_provider, **overrides)
+    if not args.demo and args.command != "init" and not getattr(args, "provider", None):
+        provider = bound_provider(project.root)
+        if provider:
+            project = replace(project, provider=provider)
     if args.command == "init":
         init_project(project, args.demo)
         return
@@ -188,6 +241,11 @@ def dispatch(argv):
         return
     if args.demo and project.provider != "vastai":
         raise CrigError("The workspace demo uses Vast.ai fixtures. Use --provider vastai.")
+    if getattr(args, "files", False):
+        from cloudrig.connections import preview_upload
+
+        preview_upload(project.root)
+        return
     startup_script = (
         load_startup_script(project.startup, root=project.root) if args.command in {"plan", "up"} else None
     )
@@ -209,6 +267,11 @@ def dispatch(argv):
     if args.timeout < 1:
         raise CrigError("--timeout must be positive.")
     if args.command == "plan" or args.plain or args.json or args.demo:
+        if project.provider == "runpod" and not binding:
+            raise CrigError(
+                "New project workspaces currently require Vast.ai disk quotes. "
+                "Use --provider vastai, or browse RunPod with crig --provider runpod --gpu QUERY."
+            )
         rows = candidates(project, api.offers(project.gpu, project.disk, project.count))
         if args.json:
             console.print_json(
@@ -219,19 +282,35 @@ def dispatch(argv):
                 }
             )
         elif args.demo and args.command == "up" and not args.plain and sys.stdin.isatty():
-            WorkspaceApp(project, rows, demo=True, setup=args.setup).run()
+            if rows:
+                choose_offer(project, rows, setup=args.setup, numbered=args.numbered, demo=True)
+            else:
+                show_plan(project, rows, binding, args.setup)
         else:
             show_plan(project, rows, binding, args.setup)
         return
     with project_lock(project):
+        if project.provider == "runpod" and not receipt(project) and not args.attach:
+            raise CrigError("New RunPod project workspaces are not supported yet. Use --provider vastai.")
         target = select_target(project, api, args)
-        if target is not None:
-            preflight(upload=isinstance(target, Rental) or target.needs_upload, editor=not args.no_code)
-            options = Options(
-                setup=args.setup,
-                open_editor=not args.no_code,
-                timeout=args.timeout,
-                startup_script=startup_script,
-                background=not args.wait,
-            )
-            launch(project, api, target, options)
+        if target is None:
+            return
+        preflight(upload=isinstance(target, Rental) or target.needs_upload, editor=not args.no_code)
+        if isinstance(target, Rental) or target.needs_upload:
+            upload_flags(project.root)
+        options = Options(
+            setup=args.setup,
+            open_editor=not args.no_code,
+            timeout=args.timeout,
+            startup_script=startup_script,
+            background=not args.wait,
+        )
+        binding = launch(project, api, target, options)
+    if options.background and not args.numbered and not args.offer and sys.stdin.isatty():
+        from cloudrig.cli import dashboard
+        from cloudrig.cli import parser as instance_parser
+
+        view = instance_parser().parse_args(["--rented"])
+        view.disk, view.count, view.image = project.disk, project.count, project.image
+        view.no_code, view.timeout = args.no_code, args.timeout
+        dashboard(api, view, startup_script, selected_id=binding.id)
