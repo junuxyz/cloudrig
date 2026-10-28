@@ -5,11 +5,12 @@ import subprocess
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from cloudrig import broker
-from cloudrig.connections import install_alias, open_code, sync_command
+from cloudrig.connections import install_alias, open_code, sync_command, wait_ready
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError
 
@@ -76,6 +77,35 @@ def test_wrong_grant_path_or_proxy_only_connection_is_rejected(grant):
         install_alias(replace(grant, public_key="/tmp/untrusted.pub"))
     with pytest.raises(CrigError):
         sync_command(replace(grant, direct=False), "./", "/workspace", True)
+
+
+@pytest.mark.parametrize("outcome", [0, 1, 77, "timeout"])
+def test_startup_waits_for_remote_tools_and_surfaces_failures(grant, monkeypatch, outcome):
+    local_run = subprocess.run
+    remote = []
+
+    def ssh_run(argv, **kwargs):
+        if "-G" in argv:
+            return local_run(argv, **kwargs)
+        remote.append(argv[-1])
+        if argv[-1] == "true":
+            return subprocess.CompletedProcess(argv, 0)
+        assert argv[-1] == "sh -s -- 3.5.0"
+        assert kwargs["input"].startswith("#!/bin/sh\n")
+        assert kwargs["timeout"] > 0
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"], stderr="SECRET")
+        return subprocess.CompletedProcess(argv, outcome, stdout="", stderr="SECRET")
+
+    monkeypatch.setattr(subprocess, "run", ssh_run)
+    provider = SimpleNamespace(instance=lambda _: grant)
+    if outcome == 0:
+        assert wait_ready(provider, grant.id) == grant
+    else:
+        with pytest.raises(CrigError) as error:
+            wait_ready(provider, grant.id)
+        assert "SECRET" not in str(error.value)
+    assert remote == ["true", "sh -s -- 3.5.0"]
 
 
 def test_real_rsync_copy_works_with_ssh_transport_and_secret_exclusions(grant, monkeypatch, tmp_path):

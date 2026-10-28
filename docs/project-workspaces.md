@@ -52,8 +52,9 @@ Add `--no-code` to prepare without opening the editor.
 
 The first `up` uploads this project with credential and cache exclusions. After upload, Cloudrig
 checks NVIDIA and PyTorch CUDA access, then opens the remote project directory. Add `--setup` to
-run the detected uv or requirements-file installer remotely. The remote image must include that
-installer. A repeat `up` preserves remote edits and reuses its saved Python environment.
+run the detected uv or requirements-file installer remotely. Before upload, Cloudrig installs
+rsync 3.5.1 and uv if needed on Debian/Ubuntu images with root SSH. A repeat `up` preserves remote
+edits and reuses its saved Python environment.
 
 If setup is interrupted, `up` keeps the allocation and retries its unfinished preparation. It asks
 before repeating an incomplete upload because matching remote files can be overwritten. After an

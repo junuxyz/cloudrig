@@ -35,6 +35,14 @@ The command layer owns interactive decisions. The workspace workflow does not im
 a terminal application. Progress messages use the shared console; there is no event bus or UI adapter
 framework. Adding another frontend does not currently justify either.
 
+Before a connection is ready, `connections.py` runs the packaged `bootstrap.sh` over approved SSH.
+It ensures rsync meets the shared minimum version and uv is available, before uploads or project
+setup. Debian/Ubuntu images with root SSH can install missing tools. Rsync uses a pinned upstream
+release with a verified SHA-256; uv uses Astral's standalone installer. Both install under
+`/usr/local/bin`. A host lock serializes setup; repeat connections skip installation when ready.
+Failures keep the existing allocation and write details to `/var/log/cloudrig-bootstrap.log` on
+the GPU. This is an unprivileged local SSH workflow, with no provider startup-command override.
+
 Project settings resolve in order: built-in defaults, global provider preference, `crig.toml`, command
 overrides. `crig init` generates values from the same project object. Demo mode reads no global state.
 Images are pinned defaults that users may override. They are not an automatically updated compatibility matrix.

@@ -175,7 +175,7 @@ def rent(api, rental: Rental, args):
     identifier = api.rent(rental)
     state.remember_instance(api.name, identifier)
     console.print(Text(f"Rented {rental.name} · {identifier}", style="green"))
-    with console.status("Waiting for the approved SSH signer…"):
+    with console.status("Preparing SSH, rsync, and uv…"):
         instance = wait_ready(api, identifier, timeout=args.timeout)
     name = alias(instance)
     if args.code:
@@ -216,9 +216,8 @@ def action(api, item: Instance, name: str, paths: list[str], args):
         raise CrigError(f"Instance is {fresh.status}. Start it with crig {item.id} start.")
     if not fresh.approved:
         api.approve(item.id)
-    if not fresh.approved or not fresh.agent_socket:
-        with console.status("Preparing the SSH connection…"):
-            fresh = wait_ready(api, item.id, timeout=args.timeout)
+    with console.status("Preparing SSH, rsync, and uv…"):
+        fresh = wait_ready(api, item.id, timeout=args.timeout)
     state.remember_instance(api.name, item.id)
     if name == "code":
         remote = paths[0] if paths else "/workspace"

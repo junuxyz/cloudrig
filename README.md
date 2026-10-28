@@ -194,6 +194,9 @@ crig doctor
 
 Rsync uses protected arguments and safe links. Both ends need upstream rsync 3.5.0+; older version
 strings, including distro backports, are rejected because this tool cannot verify their patches.
+Cloudrig prepares rsync and uv over SSH before connecting or uploading. On Debian/Ubuntu images
+with root SSH, missing tools are installed automatically under `/usr/local/bin`; existing tools
+that meet the requirements are kept. Setup logs stay at `/var/log/cloudrig-bootstrap.log` on the GPU.
 Uploads exclude `.env*`, SSH/cloud credential folders, common private-key names, `*.pem`, `*.key`,
 `.git`, and `.venv`. Home/root and credential paths cannot be direct transfer roots. These rules
 are filename filters, not a secret-content scanner. Review dry runs for unfamiliar projects.

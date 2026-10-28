@@ -79,7 +79,7 @@ def prepare(project: Project, api, binding: Binding, options: Options) -> Bindin
     console.print(
         Text(f"Workspace instance: {binding.id}. Recovery: crig up {shlex.quote(str(project.root))}")
     )
-    with console.status("Checking the approved SSH connection…"):
+    with console.status("Preparing SSH, rsync, and uv…"):
         item = wait_ready(api, binding.id, timeout=options.timeout)
     name = alias(item)
     if binding.needs_upload:

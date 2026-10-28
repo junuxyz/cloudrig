@@ -4,6 +4,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from importlib.resources import files
 from pathlib import Path
 
 from filelock import FileLock
@@ -196,6 +197,7 @@ def wait_ready(provider, identifier: str, timeout: float = 300) -> Instance:
                 env=child_environment(),
             )
             if result.returncode == 0:
+                prepare_remote_tools(name, timeout=max(1, deadline - time.monotonic()))
                 return item
         if time.monotonic() >= deadline:
             raise CrigError(
@@ -247,6 +249,30 @@ SECRET_EXCLUDES = (
     "credentials.json",
     "service-account*.json",
 )
+
+
+def prepare_remote_tools(name: str, timeout: float) -> None:
+    script = files("cloudrig").joinpath("bootstrap.sh").read_text(encoding="utf-8")
+    minimum = ".".join(map(str, MIN_RSYNC))
+    try:
+        result = subprocess.run(
+            ssh_command(name, f"sh -s -- {minimum}"),
+            input=script,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=child_environment(),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise CrigError(
+            "GPU tool setup timed out. Reconnect to continue on the same instance. "
+            "Setup log: /var/log/cloudrig-bootstrap.log."
+        ) from error
+    if result.returncode == 77:
+        raise CrigError("Automatic GPU tool installation needs root SSH. Preinstall rsync 3.5.0+ and uv.")
+    if result.returncode:
+        raise CrigError("GPU tool setup failed. See /var/log/cloudrig-bootstrap.log on the GPU.")
 
 
 def check_rsync() -> tuple[int, int, int]:

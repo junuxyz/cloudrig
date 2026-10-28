@@ -4,11 +4,21 @@ Current architecture: 0.2.2, native privileged helper and unprivileged Python cl
 
 ## Architecture cleanup
 
-The [maintained suite](architecture.md) passes 79 Python cases, the native race suite, `go vet`,
+The [maintained suite](architecture.md) passes 86 Python cases, the native race suite, `go vet`,
 and Ruff. Duplicate tests and the source-patching mutation harness have been removed.
 Native macOS and Linux amd64 builds and the
 Python package build succeed. A read-only demo command also runs from the built wheel.
 These tests performed no privileged installation, paid rental, or live provider mutation.
+
+## Remote tool setup
+
+The packaged bootstrap completed on a clean Ubuntu 24.04 ARM64 Docker container, installing
+rsync 3.5.1 and uv 0.13.6. A second run left the installation log unchanged, verifying the
+already-prepared path. The built Python wheel includes the same script.
+
+On emulated Ubuntu AMD64, rsync compiled and installed, but uv exited with a QEMU segmentation
+fault. The official uv installer and `uv --version` reproduce that fault independently of Cloudrig.
+Native AMD64 GPU execution remains unverified; no paid instance was rented for these checks.
 
 The macOS runtime fix checks the actual protected parent directory and verifies that an unsafe
 ancestor error identifies its path and permissions. A native SSH test republishes an existing grant
