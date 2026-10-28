@@ -11,7 +11,6 @@ from rich.text import Text
 from cloudrig import __version__, state
 from cloudrig.broker import BrokerProvider
 from cloudrig.connections import (
-    alias,
     default_startup_script,
     full_ssh,
     install_alias,
@@ -24,7 +23,8 @@ from cloudrig.connections import (
 )
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError, Instance, InstanceAction, Rental
-from cloudrig.terminal import console, prompt_confirm
+from cloudrig.preparation import Preparation, show_status, start
+from cloudrig.terminal import console, prompt_confirm, waiting
 from cloudrig.tui import CloudrigApp, rate, sorted_offers
 
 ACTIONS = {"ssh", "code", "exec", "agent", "push", "pull", "start", "stop", "destroy", "approve"}
@@ -47,6 +47,7 @@ Everyday:
   crig training push ./ /workspace/project/
   crig training pull /workspace/outputs/ ./outputs/
   crig training exec -- nvidia-smi
+  crig status               Check background setup and its log
   crig startup > startup.sh  Export the default startup script to edit
   crig --startup startup.sh --gpu 5090
 
@@ -91,12 +92,17 @@ Run crig doctor to check local tools.
         action="store_true",
         help="Skip the local stop prompt; fresh sudo authentication is still required",
     )
-    result.add_argument(
+    editor = result.add_mutually_exclusive_group()
+    editor.add_argument(
         "--code",
         nargs="?",
         const="/workspace",
         metavar="REMOTE_PATH",
         help="Open VS Code after rental (default: /workspace)",
+    )
+    editor.add_argument("--no-code", action="store_true", help="Prepare without opening VS Code")
+    result.add_argument(
+        "--wait", action="store_true", help="Wait here instead of preparing in the background"
     )
     result.add_argument(
         "--dry-run", action="store_true", help="Preview file transfer without modifying files"
@@ -177,16 +183,37 @@ def rent(api, rental: Rental, args, startup_script: str | None = None):
     if args.demo:
         console.print("Demo rental reviewed. No resource or credential was changed.")
         return
+    from cloudrig.workspace import preflight
+
+    preflight(upload=False, editor=not args.no_code)
     identifier = api.rent(rental)
     state.remember_instance(api.name, identifier)
     console.print(Text(f"Rented {rental.name} · {identifier}", style="green"))
-    with console.status("Preparing SSH and running startup…"):
-        instance = wait_ready(api, identifier, timeout=args.timeout, startup_script=startup_script)
-    name = alias(instance)
-    if args.code:
-        open_code(instance, "/workspace" if args.code == "." else args.code)
-    elif sys.stdin.isatty() and not args.yes:
-        run(ssh_command(name))
+    remote = None if args.no_code else ("/workspace" if args.code in {None, "."} else args.code)
+    if not args.wait:
+        start(
+            Preparation(
+                provider=api.name,
+                identifier=identifier,
+                name=rental.name,
+                timeout=args.timeout,
+                startup_script=startup_script,
+                code_path=remote,
+            )
+        )
+        console.print(f"Preparing {rental.name} in the background. Check: crig status", markup=False)
+        console.print(
+            "A notification will appear when setup finishes."
+            if remote is None
+            else "VS Code will open when setup finishes."
+        )
+        return
+    with waiting() as progress:
+        instance = wait_ready(
+            api, identifier, timeout=args.timeout, startup_script=startup_script, progress=progress
+        )
+    if remote is not None:
+        open_code(instance, remote)
 
 
 def finish(api, result, args, startup_script: str | None = None):
@@ -221,8 +248,26 @@ def action(api, item: Instance, name: str, paths: list[str], args, startup_scrip
         raise CrigError(f"Instance is {fresh.status}. Start it with crig {item.id} start.")
     if not fresh.approved:
         api.approve(item.id)
-    with console.status("Preparing SSH and running startup…"):
-        fresh = wait_ready(api, item.id, timeout=args.timeout, startup_script=startup_script)
+    if name == "code" and not args.wait:
+        remote = paths[0] if paths else "/workspace"
+        state.remember_instance(api.name, item.id)
+        start(
+            Preparation(
+                provider=api.name,
+                identifier=item.id,
+                name=item.name,
+                timeout=args.timeout,
+                startup_script=startup_script,
+                code_path="/workspace" if remote == "." else remote,
+            )
+        )
+        console.print(f"Preparing {item.name} in the background. Check: crig status", markup=False)
+        console.print("VS Code will open when setup finishes.")
+        return
+    with waiting() as progress:
+        fresh = wait_ready(
+            api, item.id, timeout=args.timeout, startup_script=startup_script, progress=progress
+        )
     state.remember_instance(api.name, item.id)
     if name == "code":
         remote = paths[0] if paths else "/workspace"
@@ -303,6 +348,12 @@ def dispatch(args):
     if args.count < 1 or args.disk < 1 or args.timeout < 1:
         raise CrigError("--count, --disk, and --timeout must be positive.")
     words = args.words
+    if words and words[0] == "status":
+        show_status(words[1] if len(words) > 1 else None)
+        return
+    if len(words) == 2 and words[1] == "status":
+        show_status(words[0])
+        return
     if words == ["startup"]:
         sys.stdout.write(default_startup_script())
         return

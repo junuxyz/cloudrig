@@ -90,6 +90,22 @@ def test_connect_handles_authorization_and_pending_setup_inline(connection, monk
     )
     monkeypatch.setattr("cloudrig.cli.wait_ready", lambda *a, **k: calls.append("wait") or item)
     monkeypatch.setattr("cloudrig.cli.open_code", lambda *a: calls.append("code"))
-    action(api, item, "code", [], args())
+    action(api, item, "code", [], args("--wait"))
     expected = [("approve", item.id)] if connection == "external" else []
     assert calls == [*expected, "wait", "code"]
+
+
+def test_rental_returns_after_recording_id_and_queuing_setup(monkeypatch, tmp_path):
+    from cloudrig.cli import rent
+    from cloudrig.models import Rental
+
+    jobs = []
+    api = SimpleNamespace(name="vastai", rent=lambda _: "42")
+    monkeypatch.setattr("cloudrig.cli.start", lambda job: jobs.append(job) or tmp_path)
+    monkeypatch.setattr("cloudrig.workspace.preflight", lambda **kwargs: None)
+    monkeypatch.setattr("cloudrig.cli.wait_ready", lambda *a, **k: pytest.fail("Waited in caller"))
+    rental = Rental(Demo().offers("5090")[0], "training", 40, Demo.default_image)
+    rent(api, rental, args(), "echo startup")
+    assert state.load()["active"]["vastai"] == "42"
+    assert jobs[0].identifier == "42" and jobs[0].code_path == "/workspace"
+    assert jobs[0].startup_script == "echo startup"

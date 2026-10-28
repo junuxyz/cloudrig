@@ -22,6 +22,7 @@ crig
 | `cli.py`, `workspace_cli.py` | Parse arguments, choose actions, review effects, and print results. |
 | `tui.py`, `workspace_tui.py` | Display data and return a selection. The UI does not allocate resources. |
 | `workspace.py` | Execute a selected rental or resume an existing binding. Takes explicit options rather than parser state. |
+| `preparation.py` | Prepare a fixed instance in a separate ordinary-user process, save progress, and notify when done. |
 | `project.py` | Load project requirements, filter offers, and persist typed bindings. Owns the project lock. |
 | `broker.py` | Local transport and normalized provider operations. Owns provider image and billing defaults. |
 | `connections.py` | Build and execute SSH, editor, and transfer commands. |
@@ -34,6 +35,18 @@ crig
 The command layer owns interactive decisions. The workspace workflow does not import a parser or
 a terminal application. Progress messages use the shared console; there is no event bus or UI adapter
 framework. Adding another frontend does not currently justify either.
+
+Rental and resume requests finish in the original command, including any sudo authentication.
+Cloudrig saves the allocation ID before starting a background preparation process. That process only
+prepares the recorded instance; it never rents or starts one. Project preparation holds the existing
+project lock and checks that its binding still points to the recorded ID.
+
+Each instance has private job, status, and log files under the user's Cloudrig configuration directory.
+A per-instance lock prevents duplicate background setup processes. Status writes are atomic.
+`crig status` reads those local records without contacting a provider. The child starts a separate
+session so closing the original terminal does not stop setup; the computer must remain awake and
+connected. It exits after setup and notification. No permanent Python service is installed.
+`--wait` runs preparation in the original terminal and shows its current step and elapsed time.
 
 Before a connection is ready, `connections.py` runs a Bash startup script over approved SSH.
 The default is the packaged `bootstrap.sh`, which ensures rsync meets the shared minimum version

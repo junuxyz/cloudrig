@@ -4,6 +4,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 
@@ -163,9 +164,16 @@ def ssh_command(name: str, *arguments: str, tty: bool = False) -> list[str]:
 
 
 def wait_ready(
-    provider, identifier: str, timeout: float = 300, *, startup_script: str | None = None
+    provider,
+    identifier: str,
+    timeout: float = 300,
+    *,
+    startup_script: str | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> Instance:
     deadline = time.monotonic() + timeout
+    if progress:
+        progress("Waiting for the GPU")
     while True:
         item = provider.instance(identifier)
         if item.status in {"error", "failed", "terminated", "exited", "stopped"}:
@@ -181,6 +189,8 @@ def wait_ready(
             and Path(item.public_key).is_file()
         ):
             name = install_alias(item)
+            if progress:
+                progress("Connecting over SSH")
             result = subprocess.run(
                 [
                     require("ssh"),
@@ -199,7 +209,11 @@ def wait_ready(
                 env=child_environment(),
             )
             if result.returncode == 0:
+                if progress:
+                    progress("Running startup script")
                 run_startup(name, timeout=max(1, deadline - time.monotonic()), script=startup_script)
+                if progress:
+                    progress("SSH and startup ready")
                 return item
         if time.monotonic() >= deadline:
             raise CrigError(

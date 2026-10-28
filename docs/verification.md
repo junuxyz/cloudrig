@@ -4,11 +4,23 @@ Current architecture: 0.2.2, native privileged helper and unprivileged Python cl
 
 ## Architecture cleanup
 
-The [maintained suite](architecture.md) passes 90 Python cases, the native race suite, `go vet`,
+The [maintained suite](architecture.md) passes 98 Python cases, the native race suite, `go vet`,
 and Ruff. Duplicate tests and the source-patching mutation harness have been removed.
 Native macOS and Linux amd64 builds and the
 Python package build succeed. A read-only demo command also runs from the built wheel.
 These tests performed no privileged installation, paid rental, or live provider mutation.
+
+## Background setup
+
+Real child-process tests check that setup starts in a separate session, repeated background requests
+reuse one process, and ready or failed results reach the saved status. Project cases verify the child
+waits for the original command to release the project lock and reads the recorded allocation.
+The child provider rejects any rental or paid start. Command tests check that Cloudrig saves the
+allocation before starting setup. Status reads need no provider connection.
+
+Tests replace editor opening and notification delivery with local callbacks. They verify notification
+text passes as data and delivery failures do not fail setup. Actual desktop notification display and
+VS Code connection to a paid GPU have not been checked for this change.
 
 ## Remote tool setup
 

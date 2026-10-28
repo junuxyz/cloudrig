@@ -147,8 +147,29 @@ def test_allocation_receipt_precedes_ssh_and_retry_never_rents_twice(project, mo
     monkeypatch.setattr(workspace, "prepare", prepare)
     for _ in range(2):
         with pytest.raises(CrigError, match="SSH timed out"):
-            workspace_cli.dispatch(["up", str(project.root), "--offer", "84021", "--no-code"])
+            workspace_cli.dispatch(["up", str(project.root), "--offer", "84021", "--no-code", "--wait"])
     assert calls == ["rent"]
+
+
+def test_default_up_queues_setup_only_after_saving_allocation(project, monkeypatch, tmp_path):
+    api = Demo()
+    monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
+    monkeypatch.setattr(workspace_cli, "preflight", lambda **kwargs: None)
+    monkeypatch.setattr(workspace_cli, "prompt_confirm", lambda _: None)
+    monkeypatch.setattr(api, "rent", lambda _: "demo-01", raising=False)
+    monkeypatch.setattr(workspace, "prepare", lambda *a: pytest.fail("Prepared in the caller"))
+    jobs = []
+
+    def queue(job):
+        assert receipt(project).id == "demo-01"
+        assert receipt(project).phase == Phase.PREPARING
+        jobs.append(job)
+        return tmp_path
+
+    monkeypatch.setattr("cloudrig.preparation.start", queue)
+    workspace_cli.dispatch(["up", str(project.root), "--offer", "84021"])
+    assert jobs[0].project == project and jobs[0].identifier == "demo-01"
+    assert jobs[0].code_path == project.remote
 
 
 def test_ambiguous_paid_submission_is_never_retried(project, monkeypatch):
@@ -240,7 +261,7 @@ def test_recover_ambiguous_rental_by_attaching_approved_id(project, monkeypatch)
     monkeypatch.setattr(workspace, "prepare", lambda *a: calls.append(a[2].phase))
     monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
     monkeypatch.setattr(workspace_cli, "preflight", lambda **kwargs: None)
-    workspace_cli.dispatch(["up", str(project.root), "--attach", "demo-01"])
+    workspace_cli.dispatch(["up", str(project.root), "--attach", "demo-01", "--wait"])
     assert receipt(project).id == "demo-01" and calls == [Phase.PREPARING]
 
 

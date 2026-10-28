@@ -2,6 +2,7 @@
 
 import shlex
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from rich.text import Text
@@ -19,7 +20,7 @@ from cloudrig.connections import (
 from cloudrig.models import CrigError, Rental, instance_id
 from cloudrig.project import Binding, Phase, Project, save_receipt
 from cloudrig.security import child_environment
-from cloudrig.terminal import console
+from cloudrig.terminal import console, waiting
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class Options:
     open_editor: bool = True
     timeout: int = 300
     startup_script: str | None = None
+    background: bool = False
 
 
 def preflight(*, upload: bool, editor: bool) -> None:
@@ -73,23 +75,61 @@ def launch(project: Project, api, target: Rental | Binding, options: Options) ->
             raise CrigError(
                 f"Workspace {item.id} is {item.status}. Inspect crig --rented. No replacement was rented."
             )
+    if options.background:
+        from cloudrig.preparation import Preparation, start
+
+        start(
+            Preparation(
+                provider=project.provider,
+                identifier=binding.id,
+                name=project.name,
+                timeout=options.timeout,
+                startup_script=options.startup_script,
+                code_path=project.remote if options.open_editor else None,
+                project=project,
+                setup=options.setup,
+            )
+        )
+        console.print(f"Preparing {project.name} in the background. Check: crig status", markup=False)
+        if options.open_editor:
+            console.print("VS Code will open when setup finishes.")
+        else:
+            console.print("A notification will appear when setup finishes.")
+        return binding
     return prepare(project, api, binding, options)
 
 
-def prepare(project: Project, api, binding: Binding, options: Options) -> Binding:
+def prepare(
+    project: Project,
+    api,
+    binding: Binding,
+    options: Options,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> Binding:
     console.print(
         Text(f"Workspace instance: {binding.id}. Recovery: crig up {shlex.quote(str(project.root))}")
     )
-    with console.status("Preparing SSH and running startup…"):
-        item = wait_ready(api, binding.id, timeout=options.timeout, startup_script=options.startup_script)
+    with waiting() as update:
+        item = wait_ready(
+            api,
+            binding.id,
+            timeout=options.timeout,
+            startup_script=options.startup_script,
+            progress=progress or update,
+        )
     name = alias(item)
     if binding.needs_upload:
+        if progress:
+            progress("Uploading the project")
         console.print("Uploading the project. Credentials, .git, .venv, and caches are excluded.")
         run(ssh_command(name, f"mkdir -p -- {shlex.quote(project.remote)}"))
         run(sync_command(item, str(project.root) + "/", project.remote + "/", True))
         binding = save_receipt(project, replace(binding, phase=Phase.UPLOADED))
     setup = project.setup
     if options.setup and setup and not binding.setup_complete:
+        if progress:
+            progress("Installing project dependencies")
         console.print(Text(f"Installing project dependencies: {shlex.join(setup)}"))
         run(ssh_command(name, f"cd {shlex.quote(project.remote)} && {shlex.join(setup)}"))
         python = ".venv/bin/python" if setup[0] == "uv" else "python"
@@ -100,6 +140,8 @@ def prepare(project: Project, api, binding: Binding, options: Options) -> Bindin
         "print(torch.cuda.get_device_name(0))"
     )
     console.print("Checking the NVIDIA driver and PyTorch CUDA access…")
+    if progress:
+        progress("Checking CUDA")
     command = (
         f"cd {shlex.quote(project.remote)} && nvidia-smi -L && "
         f"{shlex.quote(binding.python)} -c {shlex.quote(probe)}"

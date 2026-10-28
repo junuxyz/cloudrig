@@ -66,6 +66,9 @@ def parser() -> argparse.ArgumentParser:
             "--setup", action="store_true", help="Run detected uv/pip install remotely on first setup"
         )
         cmd.add_argument("--no-code", action="store_true", help="Prepare without opening VS Code")
+        cmd.add_argument(
+            "--wait", action="store_true", help="Wait here instead of preparing in the background"
+        )
         cmd.add_argument("--timeout", type=int, default=300, help="SSH and startup timeout in seconds")
     return result
 
@@ -229,5 +232,6 @@ def dispatch(argv):
                 open_editor=not args.no_code,
                 timeout=args.timeout,
                 startup_script=startup_script,
+                background=not args.wait,
             )
             launch(project, api, target, options)

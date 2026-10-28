@@ -164,13 +164,13 @@ def forget_receipt(project: Project) -> None:
 
 
 @contextmanager
-def project_lock(project: Project):
+def project_lock(project: Project, *, timeout: float = 0):
     root = state.config_dir()
     private_directory(root)
     path = root / f"project-{project.key}.lock"
     regular_file(path)
     try:
-        with FileLock(path, timeout=0, mode=0o600):
+        with FileLock(path, timeout=timeout, mode=0o600):
             yield
     except Timeout as error:
         raise CrigError("Another command is using this project. Wait for it to finish.") from error

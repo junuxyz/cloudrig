@@ -26,6 +26,29 @@ Use arrows (or `j`/`k`) to choose, `/` to filter, `s` to sort, and Enter to revi
 between GPU offers and Instances, and `ctrl+p` opens the command palette, including themes.
 Demo mode never contacts a provider or the privileged service.
 
+## Setup without waiting at the terminal
+
+After a rental is accepted, Cloudrig prepares SSH and runs startup in the background. Your terminal
+returns immediately. When setup finishes, Cloudrig opens VS Code and requests a desktop notification.
+`crig up` also uploads the project and checks CUDA in the background.
+
+```sh
+crig status                  # Show saved setup progress, errors, and the local log path
+crig status training         # Filter by instance name or ID
+crig training code           # Prepare an existing instance and open VS Code when ready
+crig training code --wait    # Keep setup in this terminal
+crig up . --wait             # Wait for project setup here
+```
+
+Add `--no-code` to a rental or `crig up` to prepare without opening the editor. SSH sessions, remote
+commands, and file transfers stay in the current terminal. An active background setup reuses its
+existing process; changes to the startup script apply after that setup finishes and you reconnect.
+
+Setup continues if you close the original terminal. Keep this computer awake and connected.
+Desktop notifications depend on your operating system's notification settings. `crig status` reads
+local setup records, rather than live instance health. If setup fails, reconnect to the same instance
+with `crig NAME code`, or repeat `crig up` for a project. A setup failure never rents a replacement.
+
 ## Install
 
 Requirements: macOS or Linux, Python 3.11+, Go 1.26+, sudo, OpenSSH **8.9+**, and rsync **3.5.0+**

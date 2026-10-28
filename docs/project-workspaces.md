@@ -23,6 +23,7 @@ Complete the existing [installation and account setup](../README.md#install), th
 crig init /path/to/project
 crig plan /path/to/project
 crig up /path/to/project
+crig status                   # Check background setup
 crig up /path/to/project       # Reconnect; keep remote edits
 crig down /path/to/project     # Confirm and stop compute; disk charges may remain
 ```
@@ -49,7 +50,10 @@ quote, so its offers are excluded. Its existing market commands continue to work
 
 `crig plan --json`, `crig up --json`, and `crig up --plain` are read-only. Use `--offer ID` for a
 plain terminal review followed by human approval, or leave it out for the interactive review.
-Add `--no-code` to prepare without opening the editor.
+By default, `up` returns after saving the allocation and starts preparation in the background.
+It opens VS Code and requests a desktop notification when ready. Check saved progress and errors
+with `crig status`. Add `--wait` to finish in this terminal, or `--no-code` to skip opening the editor.
+Keep the local computer awake and connected until setup finishes.
 
 Use `startup` in the manifest or `--startup FILE` to replace the default remote setup with your
 own Bash script. Its path is relative to this project. Export the default with
