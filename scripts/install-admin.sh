@@ -213,7 +213,7 @@ policy="$journal/new-policy"
 cat > "$policy" <<POLICY
 # Cloudrig authentication settings apply only to the protected helper.
 Defaults!$helper timestamp_timeout=0, authenticate, !setenv
-"$owner_name" ALL=(root) PASSWD: $helper login vastai, $helper login runpod, $helper rent *, $helper approve *, $helper start *, $helper destroy *, $helper recover *, $helper self-test, $helper auth-check
+"$owner_name" ALL=(root) PASSWD: $helper login vastai, $helper login runpod, $helper rent *, $helper stop *, $helper approve *, $helper destroy *, $helper recover *, $helper self-test, $helper auth-check
 POLICY
 chmod 440 "$policy"
 /usr/sbin/visudo -c -s -f "$policy"

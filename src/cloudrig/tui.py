@@ -1,7 +1,5 @@
 import asyncio
 import math
-import time
-from pathlib import Path
 
 from rich.text import Text
 from textual import on, work
@@ -13,7 +11,7 @@ from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
 from textual.widgets import Button, DataTable, Input, Label, Static
 
-from cloudrig import __version__, preparation, state, updates
+from cloudrig import __version__, state, updates
 from cloudrig.models import CrigError, Instance, InstanceAction, Offer, Rental
 
 ACCENT = "#a5b4fc"
@@ -26,8 +24,6 @@ SORT_COLUMNS = {
 }
 PULSE = ("●  ·  ·", "·  ●  ·", "·  ·  ●", "·  ●  ·")
 SIDEBAR_MIN_WIDTH = 104
-SPINNER = "⣾⣽⣻⢿⡿⣟⣯⣷"
-TIMELINE_WIDTH = 57
 
 THEMES = (
     Theme(
@@ -130,14 +126,6 @@ def hints(text: Text, pairs: list[tuple[str, str]], colors: dict[str, str]) -> T
     return text
 
 
-def spinner(frame: int, colors: dict[str, str]) -> Text:
-    return Text(SPINNER[frame % len(SPINNER)], style=colors["primary"])
-
-
-def clock(seconds: int) -> str:
-    return f"{seconds // 60}m {seconds % 60:02}s" if seconds >= 60 else f"{seconds}s"
-
-
 def field(text: Text, label: str, value: str | Text, colors: dict[str, str]) -> None:
     text.append(f"\n{label:<13}", style=colors["faint"])
     if isinstance(value, Text):
@@ -160,81 +148,6 @@ class Dialog(ModalScreen):
             yield EscHint("esc", id="back", classes="esc")
 
     def action_cancel(self):
-        self.dismiss(None)
-
-
-class PreparationDetails(Dialog):
-    def __init__(self, identifier: str):
-        super().__init__()
-        self.identifier = identifier
-
-    def compose(self) -> ComposeResult:
-        record = self.app.preparations[self.identifier]
-        with Vertical(id="preparation-details", classes="dialog"):
-            yield from self.header(record["name"])
-            yield Static(id="setup-current")
-            yield Static(id="setup-history")
-            yield Static(id="setup-log")
-            with Horizontal(classes="dialog-actions"):
-                yield Static(id="setup-hint")
-                yield Button("Done", id="close-progress")
-
-    def on_mount(self):
-        self.update_progress()
-
-    def update_progress(self):
-        if not self.query("#setup-hint"):
-            return  # The timer can fire before compose finishes.
-        record = self.app.preparations.get(self.identifier)
-        if not record:
-            self.query_one("#setup-current", Static).update("Setup record is no longer available.")
-            return
-        colors = palette(self.app)
-        phase, now = record["phase"], time.time()
-        active = phase in {"queued", "preparing"}
-        tone = {"ready": colors["success"], "failed": colors["error"], "interrupted": colors["error"]}
-        label = {"queued": "queued", "preparing": "preparing", "ready": "ready"}.get(phase, "stopped")
-        current = Text(record["step"], style=f"bold {colors['fg']}")
-        current.append("\n")
-        current.append(label, style=tone.get(phase, colors["primary"]))
-        elapsed = max(0, int(record.get("finished", now) - record["started"]))
-        current.append(f"   {clock(elapsed)}", style=colors["faint"])
-        self.query_one("#setup-current", Static).update(current)
-        events = record.get("history", [])[-8:]
-        history = Text()
-        for index, event in enumerate(events):
-            last = index == len(events) - 1
-            ends = record.get("finished", now) if last else events[index + 1]["at"]
-            if not last or phase == "ready":
-                mark, color, step = "✓", colors["faint"], colors["muted"]
-            elif active:
-                mark, color, step = (
-                    SPINNER[self.app.preparation_frame % len(SPINNER)],
-                    colors["primary"],
-                    colors["fg"],
-                )
-            else:
-                mark, color, step = "✕", colors["error"], colors["fg"]
-            history.append(f"{mark}   ", style=color)
-            history.append(f"{event['step']:<{TIMELINE_WIDTH}}", style=step)
-            seconds = max(0, int(ends - event["at"]))
-            step_time = clock(seconds) if seconds else "<1s"
-            history.append(f"{step_time:>7}\n", style=colors["faint"])
-        if not history:
-            history.append("Earlier steps were not recorded for this setup.", style=colors["faint"])
-        history.rstrip()
-        self.query_one("#setup-history", Static).update(history)
-        log = Text("log   ", style=colors["faint"])
-        path = preparation.directory(self.app.provider.name, self.identifier) / "setup.log"
-        if path.is_relative_to(Path.home()):
-            path = "~" / path.relative_to(Path.home())
-        log.append(str(path), style=colors["muted"])
-        self.query_one("#setup-log", Static).update(log)
-        note = "Updates live" if active else "Finished"
-        self.query_one("#setup-hint", Static).update(Text(note, style=colors["faint"]))
-
-    @on(Button.Pressed, "#close-progress")
-    def close(self):
         self.dismiss(None)
 
 
@@ -390,42 +303,21 @@ class Actions(Dialog):
         Binding("down,j", "app.focus_next", show=False),
     ]
     # Delete deliberately has no single-key shortcut.
-    HOTKEYS = {
-        "p": "approve",
-        "s": "ssh",
-        "c": "code",
-        "a": "agent",
-        "u": "push",
-        "d": "pull",
-        "t": "start",
-        "x": "stop",
-    }
+    HOTKEYS = {"c": "code", "x": "stop"}
 
     def __init__(self, instance: Instance):
         super().__init__()
         self.instance = instance
 
     def groups(self) -> list[tuple[str, list[tuple[str, str, str]]]]:
-        row = self.instance
         manage = []
-        if row.status != "running":
-            manage.append(("Start instance", "start", "sudo"))
-        if row.status not in {"stopped", "exited"}:
-            manage.append(("Stop instance", "stop", ""))
-        if row.approved:
-            manage.append(("Reauthorize connection", "approve", "sudo"))
+        if self.instance.status not in {"stopped", "exited"}:
+            manage.append(("Stop instance", "stop", "sudo"))
         manage.append(("Delete instance", "destroy", "sudo"))
-        authorization = "" if row.approved else "sudo"
-        connect = [
-            ("Connect with SSH", "ssh", authorization),
-            ("Open in VS Code", "code", authorization),
-            ("Run an agent", "agent", authorization),
-        ]
-        return [
-            ("connect", connect),
-            ("files", [("Send files to cloud", "push", ""), ("Get files locally", "pull", "")]),
-            ("manage", manage),
-        ]
+        groups = []
+        if self.instance.status not in {"stopped", "exited", "terminated"}:
+            groups.append(("connect", [("Open in VS Code", "code", "")]))
+        return [*groups, ("manage", manage)]
 
     def compose(self) -> ComposeResult:
         keys = {value: key for key, value in self.HOTKEYS.items()}
@@ -470,9 +362,8 @@ class Help(Dialog):
         ("q", "quit"),
     )
     ACTIONS = (
-        ("s c a", "ssh, VS Code, agent"),
-        ("u d", "send, get files"),
-        ("p t x", "authorize, start, stop"),
+        ("c", "open in VS Code"),
+        ("x", "stop instance"),
     )
 
     def compose(self) -> ComposeResult:
@@ -483,13 +374,15 @@ class Help(Dialog):
     def on_mount(self):
         colors = palette(self.app)
         text = Text()
-        for title, keys in (("", self.KEYS), ("in workspace actions", self.ACTIONS)):
+        for title, keys in (("", self.KEYS), ("in instance actions", self.ACTIONS)):
             if title:
                 text.append(f"\n{title}\n", style=colors["faint"])
             for key, label in keys:
                 text.append(f"{key:<11}", style=colors["fg"])
                 text.append(f"{label}\n", style=colors["muted"])
-        text.append("\nDelete has no shortcut. Renting and starting ask for sudo.", style=colors["faint"])
+        text.append(
+            "\nDelete has no shortcut. Renting, stopping, and deleting ask for sudo.", style=colors["faint"]
+        )
         self.query_one("#help-body", Static).update(text)
 
 
@@ -525,17 +418,9 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
     #search > .input--placeholder { color: $foreground 30%; }
     #meta { width: auto; height: 1; padding-left: 2; }
 
-    #preparation { height: auto; max-height: 6; margin-top: 1; }
+    #action-feedback { height: auto; max-height: 6; margin-top: 1; }
     #activity-row { height: auto; }
     #activity { width: 1fr; height: auto; max-height: 4; }
-    #show-progress { width: auto; min-width: 0; height: 1; padding: 0; margin: 0 0 0 2;
-        background: $background; color: $foreground 40%; }
-    #show-progress:hover, #show-progress:focus { background: $background; color: $foreground; }
-    #setup-current { height: auto; margin-top: 1; }
-    #setup-history { height: auto; margin-top: 1; }
-    #setup-log { height: auto; margin-top: 1; padding-top: 1; border-top: solid $foreground 8%; }
-    #setup-hint { width: 1fr; height: 1; }
-    #preparation-details .dialog-actions { margin-top: 2; }
     #stage { height: 1fr; layers: base splash; margin-top: 1; }
     #body { height: 1fr; }
     #splash { layer: splash; width: 100%; height: 100%; background: $background;
@@ -613,11 +498,10 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         Binding("slash", "filter", "Filter", key_display="/"),
         Binding("s", "sort", "Sort"),
         Binding("r", "refresh", "Refresh"),
-        Binding("g", "progress", "Setup progress"),
         Binding("enter", "select", "Details", show=True),
         Binding("escape", "table", "Back", show=False),
         Binding("1", "view('market')", "GPU offers", show=False),
-        Binding("2", "view('workspaces')", "Instances", show=False),
+        Binding("2", "view('instances')", "Instances", show=False),
         Binding("j", "cursor(1)", show=False),
         Binding("k", "cursor(-1)", show=False),
         Binding("question_mark", "help", "Help", key_display="?"),
@@ -650,9 +534,6 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.table_narrow = False
         self.selected_id = selected_id
         self.action_error = action_error
-        self.preparations: dict[str, dict] = {}
-        self.preparation_frame = 0
-        self.progress_error: str | None = None
         self.announce = False
         self.previous: dict[str, float] = {}
         for theme in THEMES:
@@ -663,17 +544,16 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             with Horizontal(id="header"):
                 yield Static("cloudrig", id="brand")
                 yield Tab("GPU offers", "market")
-                yield Tab("Instances", "workspaces")
+                yield Tab("Instances", "instances")
                 yield Static(id="header-space")
                 yield Static(id="provider")
             with Horizontal(id="searchbar"):
                 yield Label("/", id="search-label")
                 yield Input(id="search")
                 yield Static(id="meta")
-            with Vertical(id="preparation"):
+            with Vertical(id="action-feedback"):
                 with Horizontal(id="activity-row"):
                     yield Static(id="activity")
-                    yield Button("details  g", id="show-progress")
             with Vertical(id="stage"):
                 with Horizontal(id="body"):
                     yield DataTable(
@@ -697,12 +577,10 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.apply_layout()
         self.query_one(DataTable).focus()
         self.load_rows()
-        self.paint_activity()
-        self.set_interval(0.08, self.animate_preparations)
+        self.paint_error()
         if not self.demo:
             self.check_updates()
-            self.poll_preparations()
-            self.set_interval(1, self.poll_preparations)
+            self.set_interval(10, lambda: self.load_rows() if self.rented and not self.loading else None)
 
     @work(exclusive=True, group="update-check")
     async def check_updates(self):
@@ -714,122 +592,17 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
                 timeout=12,
             )
 
-    @work(exclusive=True, group="preparation-status")
-    async def poll_preparations(self):
-        try:
-            records = await asyncio.to_thread(preparation.statuses, self.provider.name)
-        except (OSError, ValueError, KeyError, TypeError, CrigError):
-            self.progress_error = "Could not read local setup progress. Check crig status for details."
-            self.paint_activity()
+    def paint_error(self):
+        if not self.query("#action-feedback"):
             return
-        if not self.query("#preparation"):
-            return
-        previous = self.preparations
-        self.preparations = records
-        self.progress_error = None
-        changed = records != previous
-        became_ready = False
-        if changed:
-            for identifier, record in records.items():
-                old_phase = previous.get(identifier, {}).get("phase")
-                if old_phase in {"queued", "preparing"} and record["phase"] in {
-                    "ready",
-                    "failed",
-                    "interrupted",
-                }:
-                    became_ready = became_ready or record["phase"] == "ready"
-                    self.notify(
-                        f"{record['name']}: {record['step']}",
-                        title="Workspace ready" if record["phase"] == "ready" else "Setup needs attention",
-                        severity="information" if record["phase"] == "ready" else "error",
-                        timeout=8,
-                    )
-            self.populate()
-        self.paint_activity()
-        self.update_inspector()
-        if isinstance(self.screen, PreparationDetails):
-            self.screen.update_progress()
-        if became_ready and self.rented and not self.loading:
-            self.load_rows()
-
-    def paint_activity(self):
-        if not self.query("#preparation"):
-            return
-        colors = palette(self)
-        lines = Text()
-        if self.action_error:
-            lines.append(self.action_error + "\n", style=colors["error"])
-        if self.progress_error:
-            lines.append(self.progress_error + "\n", style=colors["warning"])
-        now = time.time()
-        visible = {row.id for row in self.rows if isinstance(row, Instance)}
-        for identifier, record in self.preparations.items():
-            phase = record["phase"]
-            if phase in {"failed", "interrupted"} and identifier not in visible:
-                continue
-            if phase == "ready" and now - record.get("finished", 0) > 60:
-                continue
-            elapsed = max(0, int(record.get("finished", now) - record["started"]))
-            if phase in {"failed", "interrupted"}:
-                mark, color = "✕", colors["error"]
-            elif phase == "ready":
-                mark, color = "✓", colors["success"]
-            else:
-                mark, color = "", ""
-            if mark:
-                lines.append(f"{mark}  ", style=color)
-            else:
-                lines.append_text(spinner(self.preparation_frame, colors))
-                lines.append("  ")
-            lines.append(f"{record['name']}   ", style=f"bold {colors['fg']}")
-            lines.append(record["step"], style=colors["error"] if mark == "✕" else colors["muted"])
-            lines.append(f"   {clock(elapsed)}\n", style=colors["faint"])
-        panel = self.query_one("#activity", Static)
-        self.query_one("#preparation").display = bool(lines.plain)
-        panel.display = bool(lines.plain)
-        lines.rstrip()
-        panel.update(lines)
-        self.query_one("#show-progress", Button).disabled = not self.preparations
+        self.query_one("#action-feedback").display = bool(self.action_error)
+        self.query_one("#activity", Static).update(
+            Text(self.action_error or "", style=palette(self)["error"])
+        )
 
     def instance_status(self, row: Instance, colors) -> Text:
         mark, color = status_style(row.status, colors)
-        record = self.preparations.get(row.id)
-        status = row.status
-        if record and row.status not in {"stopped", "exited"}:
-            phase = record["phase"]
-            if phase in {"queued", "preparing"}:
-                text = spinner(self.preparation_frame, colors)
-                text.append(" preparing", style=colors["muted"])
-                return text
-            if phase in {"failed", "interrupted"}:
-                status, mark, color = "setup failed", "✕", colors["error"]
-            elif phase == "ready" and row.status == "running":
-                status, mark, color = "ready", "●", colors["success"]
-        return Text(f"{mark} {status}", style=color)
-
-    def animate_preparations(self):
-        self.preparation_frame += 1
-        if any(record["phase"] in {"queued", "preparing"} for record in self.preparations.values()):
-            self.paint_activity()
-            if isinstance(self.screen, PreparationDetails):
-                self.screen.update_progress()
-        if not self.rented or self.loading or not self.query(DataTable):
-            return
-        table = self.query_one(DataTable)
-        colors = palette(self)
-        for row in self.visible_rows:
-            record = self.preparations.get(row.id)
-            if record and record["phase"] in {"queued", "preparing"}:
-                table.update_cell(row.id, "status", self.instance_status(row, colors))
-
-    @on(Button.Pressed, "#show-progress")
-    def action_progress(self):
-        if len(self.screen_stack) != 1 or not self.preparations:
-            return
-        identifier = (
-            self.selected_id if self.selected_id in self.preparations else next(iter(self.preparations))
-        )
-        self.push_screen(PreparationDetails(identifier))
+        return Text(f"{mark} {row.status}", style=color)
 
     def theme_changed(self, theme: Theme):
         self.paint_chrome()
@@ -875,7 +648,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             provider.append("   demo", style=colors["primary"])
         self.query_one("#provider", Static).update(provider)
         for tab in self.query(Tab):
-            tab.set_class((tab.view == "workspaces") == self.rented, "-active")
+            tab.set_class((tab.view == "instances") == self.rented, "-active")
         self.query_one("#search", Input).placeholder = (
             "Filter by name, GPU, region" if self.rented else "Filter by GPU, region, offer ID"
         )
@@ -1056,7 +829,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.paint_meta()
         self.update_inspector()
         self.paint_splash()
-        self.paint_activity()
+        self.paint_error()
 
     def paint_meta(self):
         if not self.query("#meta"):
@@ -1238,16 +1011,6 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         text.append("\n\n")
         field(text, "region", row.region, colors)
         field(text, "address", f"{row.host}:{row.port}" if row.host else "not assigned", colors)
-        access = (
-            Text("authorized", style=colors["fg"])
-            if row.approved
-            else Text("needs sudo", style=colors["warning"])
-        )
-        field(text, "access", access, colors)
-        if progress := self.preparations.get(row.id):
-            field(text, "setup", progress["step"], colors)
-            if progress["phase"] in {"failed", "interrupted"}:
-                field(text, "log", str(preparation.directory(row.provider, row.id) / "setup.log"), colors)
         field(text, "provider", row.provider, colors)
         field(text, "id", row.id, colors)
         text.append("\n\n\n")
@@ -1258,9 +1021,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
 
     def get_system_commands(self, screen: Screen):
         yield SystemCommand("GPU offers", "Search GPU offers", lambda: self.action_view("market"))
-        yield SystemCommand("Instances", "Your rented instances", lambda: self.action_view("workspaces"))
-        if self.preparations:
-            yield SystemCommand("Setup progress", "View setup events and elapsed time", self.action_progress)
+        yield SystemCommand("Instances", "Your rented instances", lambda: self.action_view("instances"))
         yield SystemCommand("Refresh", "Reload from the provider", self.action_refresh)
         yield SystemCommand("Filter", "Focus the filter field", self.action_filter)
         yield SystemCommand("Keyboard shortcuts", "Show every key cloudrig understands", self.action_help)
@@ -1304,7 +1065,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.query_one(DataTable).focus()
 
     def action_view(self, view: str):
-        rented = view == "workspaces"
+        rented = view == "instances"
         if rented == self.rented or len(self.screen_stack) > 1:
             return
         self.rented = rented

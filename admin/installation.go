@@ -27,7 +27,7 @@ func (s *Store) checkService() error {
 	if err = json.NewDecoder(c).Decode(&reply); err != nil {
 		return err
 	}
-	if reply.Error != "" || reply.Data.Protocol != 3 {
+	if reply.Error != "" || reply.Data.Protocol != 4 {
 		return errors.New("running Cloudrig service has an incompatible protocol")
 	}
 	return nil

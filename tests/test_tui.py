@@ -3,7 +3,7 @@ from textual.widgets import DataTable, Input, Static
 
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError, InstanceAction, Rental
-from cloudrig.tui import Actions, Checkout, CloudrigApp, Help
+from cloudrig.tui import Actions, Checkout, Choice, CloudrigApp, Help
 
 
 async def test_update_check_does_not_block_dashboard_and_shows_action(monkeypatch):
@@ -116,6 +116,7 @@ async def test_instances_actions_and_no_implicit_mutation():
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, Actions)
+        assert {choice.value for choice in app.screen.query(Choice)} == {"code", "stop", "destroy"}
         await pilot.click("#do-code")
         await pilot.pause()
     assert isinstance(app.return_value, InstanceAction)
@@ -231,113 +232,3 @@ async def test_provider_failure_remains_visible_and_retry_recovers():
         await pilot.press("r")
         await pilot.pause()
         assert app.visible_rows and not splash.display and app.load_error is None
-
-
-@pytest.fixture
-def saved_progress():
-    import json
-    import os
-    import time
-
-    from cloudrig import preparation, state
-
-    folder = preparation.directory("vastai", "demo-01")
-    preparation.private_directory(folder.parent)
-    record = {
-        "provider": "vastai",
-        "id": "demo-01",
-        "name": "training",
-        "phase": "preparing",
-        "step": "Uploading the project",
-        "pid": os.getpid(),
-        "started": time.time() - 75,
-    }
-
-    def save(**changes):
-        record.update(changes)
-        state.atomic_write(folder / "status.json", json.dumps(record))
-        return folder
-
-    save()
-    return save
-
-
-@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
-async def test_dashboard_shows_live_setup_without_blocking_browsing(saved_progress, size):
-    app = CloudrigApp(Demo(), rented=True)
-    async with app.run_test(size=size) as pilot:
-        await pilot.pause()
-        await app.poll_preparations().wait()
-        assert "Uploading the project" in str(app.query_one("#activity", Static).render())
-        assert "preparing" in str(app.query_one(DataTable).get_cell("demo-01", "status"))
-        await pilot.press("1")
-        await pilot.pause()
-        assert not app.rented and app.visible_rows
-        assert "Uploading the project" in str(app.query_one("#activity", Static).render())
-        saved_progress(phase="ready", step="Ready")
-        await app.poll_preparations().wait()
-        await pilot.press("2")
-        await pilot.pause()
-        assert "ready" in str(app.query_one(DataTable).get_cell("demo-01", "status"))
-
-
-async def test_setup_failure_stays_visible_with_log_location(saved_progress):
-    saved_progress(phase="failed", step="Dependency install failed")
-    app = CloudrigApp(Demo(), rented=True, selected_id="demo-01")
-    async with app.run_test(size=(120, 36)) as pilot:
-        await pilot.pause()
-        await app.poll_preparations().wait()
-        assert "Dependency install failed" in str(app.query_one("#activity", Static).render())
-        assert "setup failed" in str(app.query_one(DataTable).get_cell("demo-01", "status"))
-        assert "setup.log" in str(app.query_one("#inspector", Static).render())
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, Actions)
-
-
-async def test_corrupt_progress_does_not_break_dashboard(saved_progress):
-    from cloudrig import state
-
-    folder = saved_progress()
-    app = CloudrigApp(Demo(), rented=True)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        await app.poll_preparations().wait()
-        state.atomic_write(folder / "status.json", "invalid json")
-        await app.poll_preparations().wait()
-        assert "Could not read local setup progress" in str(app.query_one("#activity", Static).render())
-        await pilot.press("1")
-        await pilot.pause()
-        assert not app.rented and app.visible_rows
-
-
-@pytest.mark.parametrize("size", [(120, 36), (80, 24)])
-async def test_progress_panel_opens_live_details_and_returns_to_dashboard(saved_progress, size):
-    import time
-
-    from cloudrig.tui import PreparationDetails
-
-    now = time.time()
-    saved_progress(history=[{"step": "Connecting over SSH", "at": now - 30}])
-    app = CloudrigApp(Demo(), rented=True, selected_id="demo-01")
-    async with app.run_test(size=size) as pilot:
-        await pilot.pause()
-        await app.poll_preparations().wait()
-        assert "◐" not in str(app.query_one(DataTable).get_cell("demo-01", "status"))
-        await pilot.click("#show-progress")
-        await pilot.pause()
-        assert isinstance(app.screen, PreparationDetails)
-        assert "Connecting over SSH" in str(app.screen.query_one("#setup-history", Static).render())
-        saved_progress(step="Checking the GPU")
-        await app.poll_preparations().wait()
-        assert "Checking the GPU" in str(app.screen.query_one("#setup-current", Static).render())
-        await pilot.press("escape")
-        await pilot.pause()
-        assert not isinstance(app.screen, PreparationDetails)
-        assert app.query_one(DataTable).row_count == 3
-        await pilot.press("g")
-        await pilot.pause()
-        assert isinstance(app.screen, PreparationDetails)
-        await pilot.click("#close-progress")
-        await pilot.pause()
-        assert not isinstance(app.screen, PreparationDetails)

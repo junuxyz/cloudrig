@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cloudrig"
-version = "0.2.8"
-description = "Rent a cloud GPU and open a remote project."
+version = "0.3.0"
+description = "Rent cloud GPUs, open VS Code, stop, and delete."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

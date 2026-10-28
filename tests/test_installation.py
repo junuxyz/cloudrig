@@ -105,8 +105,8 @@ def test_cancelled_packaged_installation_never_executes(monkeypatch, bundle):
 def test_official_update_verifies_before_install_and_service(monkeypatch, bundle, failure):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(installation.shutil, "which", lambda name: f"/tools/{name}")
-    name = "cloudrig-0.3.0-py3-none-macosx_13_0_arm64.whl"
-    monkeypatch.setattr(updates, "latest_release", lambda: updates.Release("0.3.0", frozenset({name})))
+    name = "cloudrig-0.4.0-py3-none-macosx_13_0_arm64.whl"
+    monkeypatch.setattr(updates, "latest_release", lambda: updates.Release("0.4.0", frozenset({name})))
     calls = []
 
     def run(command, **kwargs):
@@ -122,11 +122,11 @@ def test_official_update_verifies_before_install_and_service(monkeypatch, bundle
         installation.update([])
     expected = ("download", "verify", "install", "service")
     assert len(calls) == (expected.index(failure) + 1 if failure else 4)
-    assert calls[0][:4] == ["/tools/gh", "release", "download", "v0.3.0"]
+    assert calls[0][:4] == ["/tools/gh", "release", "download", "v0.4.0"]
     assert calls[0][calls[0].index("--repo") + 1] == "junuxyz/cloudrig"
     if len(calls) > 1:
         assert calls[1][:3] == ["/tools/gh", "attestation", "verify"]
-        assert calls[1][calls[1].index("--source-ref") + 1] == "refs/tags/v0.3.0"
+        assert calls[1][calls[1].index("--source-ref") + 1] == "refs/tags/v0.4.0"
     if len(calls) > 2:
         assert calls[2][:4] == ["/tools/uv", "tool", "install", "--force"]
     if len(calls) > 3:
@@ -136,7 +136,7 @@ def test_official_update_verifies_before_install_and_service(monkeypatch, bundle
 def test_missing_platform_release_never_downloads_or_installs(monkeypatch, bundle):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(installation.shutil, "which", lambda name: f"/tools/{name}")
-    monkeypatch.setattr(updates, "latest_release", lambda: updates.Release("0.3.0", frozenset()))
+    monkeypatch.setattr(updates, "latest_release", lambda: updates.Release("0.4.0", frozenset()))
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Executed incomplete update"))
     with pytest.raises(CrigError, match="no wheel for this platform"):
         installation.update([])

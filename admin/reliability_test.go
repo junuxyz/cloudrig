@@ -304,34 +304,6 @@ func TestDeleteRevokesBeforeNetworkAndOnlyConfirmedDeletionReleasesName(t *testi
 	}
 }
 
-func TestStartPriceRecheckPreventsSpendingAtAnIncreasedPrice(t *testing.T) {
-	for _, increased := range []bool{false, true} {
-		t.Run(fmt.Sprint(increased), func(t *testing.T) {
-			s := testStore(t)
-			f := newVastProvider(t, s)
-			f.listed.Store(true)
-			s.Output = writerFunc(func(data []byte) (int, error) {
-				message := string(data)
-				if !strings.Contains(message, "$0.800000/hour") {
-					t.Errorf("wrong start quote: %s", message)
-				}
-				if increased {
-					f.price.Store(math.Float64bits(1.1))
-				}
-				return len(data), nil
-			})
-			e := s.mutate("vastai", "101", "start")
-			if increased {
-				if e == nil || f.starts.Load() != 0 {
-					t.Fatal("increased price was submitted", e)
-				}
-			} else if e != nil || f.starts.Load() != 1 {
-				t.Fatal("approved unchanged quote did not start", e)
-			}
-		})
-	}
-}
-
 func TestSuccessfulRentalCanAuthenticateUsingOnlyPublishedPublicGrant(t *testing.T) {
 	for _, provider := range []string{"vastai", "runpod"} {
 		t.Run(provider, func(t *testing.T) {

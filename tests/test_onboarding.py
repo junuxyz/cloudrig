@@ -4,11 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from cloudrig import installation, onboarding, state, workspace_cli
+from cloudrig import installation, onboarding, state
 from cloudrig.cli import main
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError
-from cloudrig.project import load_project
 
 
 def test_setup_without_terminal_fails_before_configuration_changes():
@@ -31,7 +30,6 @@ def test_existing_service_setup_saves_provider_only_after_successful_login(monke
     state.update(provider="runpod")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(onboarding.Prompt, "ask", lambda *a, **k: "1")
-    monkeypatch.setattr("cloudrig.workspace.preflight", lambda **k: None)
     monkeypatch.setattr(onboarding, "ensure_service", lambda p, source: calls.append(("health", p)))
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Installed healthy service"))
 
@@ -60,7 +58,6 @@ def test_source_installation_keeps_build_sudo_health_login_in_order(monkeypatch,
     (source / "admin/go.mod").touch()
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(onboarding.Prompt, "ask", lambda *a, **k: "1")
-    monkeypatch.setattr("cloudrig.workspace.preflight", lambda **k: None)
     monkeypatch.setattr(installation.shutil, "which", lambda _: "/usr/local/bin/go")
     monkeypatch.setattr(installation, "check_service", lambda _: calls.append("health"))
 
@@ -96,34 +93,6 @@ def test_source_installation_keeps_build_sudo_health_login_in_order(monkeypatch,
         assert state.load()["provider"] == "vastai"
 
 
-def test_numbered_offer_review_paginates_and_requires_confirmation(monkeypatch, tmp_path):
-    project = load_project(str(tmp_path))
-    rows = Demo().offers("5090")
-    rows = rows + rows[:2]
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    answers = iter(["6", "2"])
-    monkeypatch.setattr(workspace_cli.Prompt, "ask", lambda *a, **k: next(answers))
-    monkeypatch.setattr(workspace_cli.WorkspaceApp, "run", lambda _: pytest.fail("Opened full-screen UI"))
-    reviewed = []
-    monkeypatch.setattr(workspace_cli, "prompt_confirm", reviewed.append)
-    selected = workspace_cli.choose_offer(project, rows, setup=True, numbered=True)
-    assert selected == rows[6]
-    assert len(reviewed) == 1 and "Billing starts" in reviewed[0]
-
-
-def test_cancelled_offer_review_returns_without_confirmation(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(workspace_cli.Prompt, "ask", lambda *a, **k: "0")
-    monkeypatch.setattr(workspace_cli, "prompt_confirm", lambda _: pytest.fail("Confirmed rental"))
-    assert (
-        workspace_cli.choose_offer(
-            load_project(str(tmp_path)), Demo().offers("5090"), setup=False, numbered=True
-        )
-        is None
-    )
-    assert not state.config_dir().exists()
-
-
 def test_declining_installation_never_builds_installs_or_logs_in(monkeypatch, tmp_path):
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts/install-admin.sh").touch()
@@ -131,7 +100,6 @@ def test_declining_installation_never_builds_installs_or_logs_in(monkeypatch, tm
     (tmp_path / "admin/go.mod").touch()
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(onboarding.Prompt, "ask", lambda *a, **k: "1")
-    monkeypatch.setattr("cloudrig.workspace.preflight", lambda **k: None)
     monkeypatch.setattr(installation.shutil, "which", lambda _: "/usr/local/bin/go")
 
     def unavailable(_):
@@ -147,22 +115,6 @@ def test_declining_installation_never_builds_installs_or_logs_in(monkeypatch, tm
     with pytest.raises(CrigError, match="Cancelled"):
         onboarding.setup(["--source", str(tmp_path)])
     assert not state.config_dir().exists()
-
-
-def test_declining_numbered_rental_does_not_submit_or_save_binding(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(workspace_cli.Prompt, "ask", lambda *a, **k: "1")
-    api = Demo()
-    monkeypatch.setattr(workspace_cli, "BrokerProvider", lambda _: api)
-    monkeypatch.setattr(api, "rent", lambda _: pytest.fail("Submitted rental"), raising=False)
-
-    def decline(_):
-        raise CrigError("Cancelled")
-
-    monkeypatch.setattr(workspace_cli, "prompt_confirm", decline)
-    with pytest.raises(CrigError, match="Cancelled"):
-        workspace_cli.dispatch(["up", str(tmp_path), "--no-code", "--numbered"])
-    assert not state.load().get("projects")
 
 
 def test_default_command_opens_dashboard_for_existing_account(monkeypatch):
@@ -200,12 +152,3 @@ def test_first_setup_continues_into_dashboard(monkeypatch):
     )
     main()
     assert opened == [True]
-
-
-def test_project_review_uses_full_screen_by_default(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    project = load_project(str(tmp_path))
-    rows = Demo().offers("5090")
-    monkeypatch.setattr(workspace_cli.Prompt, "ask", lambda *a, **k: pytest.fail("Numbered prompt"))
-    monkeypatch.setattr(workspace_cli.WorkspaceApp, "run", lambda _: rows[0])
-    assert workspace_cli.choose_offer(project, rows, setup=False, numbered=False) == rows[0]

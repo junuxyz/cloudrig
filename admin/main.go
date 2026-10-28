@@ -1,4 +1,3 @@
-// cloudrig-admin is the only privileged component. It has no dependency on the Python CLI.
 package main
 
 import (
@@ -16,7 +15,6 @@ import (
 
 const stateRoot = "/var/db/cloudrig"
 
-// selfTest checks credential isolation and the running service protocol.
 func (s *Store) selfTest() error {
 	probe := filepath.Join(s.Root, ".permission-probe")
 	if e := atomic(probe, []byte("not-a-real-credential"), 0600); e != nil {
@@ -49,7 +47,7 @@ func main() {
 	invokingUID := os.Getenv("SUDO_UID")
 	os.Clearenv()
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: cloudrig-admin daemon|login|rent|approve|start|destroy|recover|self-test")
+		fmt.Fprintln(os.Stderr, "usage: cloudrig-admin daemon|login|rent|stop|destroy|approve|recover|self-test")
 		os.Exit(1)
 	}
 	var cfg Config
@@ -97,11 +95,15 @@ func main() {
 		} else {
 			e = s.login(args[0])
 		}
-	case "approve", "start", "destroy":
+	case "approve":
 		if len(args) != 2 {
 			e = errors.New("provider and ID required")
-		} else if verb == "approve" {
+		} else {
 			e = s.approve(args[0], args[1])
+		}
+	case "stop", "destroy":
+		if len(args) != 2 {
+			e = errors.New("provider and ID required")
 		} else {
 			e = s.mutate(args[0], args[1], verb)
 		}

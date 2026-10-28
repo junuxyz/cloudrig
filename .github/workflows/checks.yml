@@ -26,29 +26,11 @@ jobs:
           cache-dependency-path: admin/go.sum
       - name: Install Python
         run: uv python install 3.12
-      - name: Install current rsync on macOS
-        if: runner.os == 'macOS'
-        run: brew install rsync
-      - name: Build pinned rsync on Linux
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          curl -fLsS https://rsync.samba.org/ftp/rsync/src/rsync-3.5.1.tar.gz -o "$RUNNER_TEMP/rsync.tar.gz"
-          echo "c55f9c9dc10fb8bec397b399a0fdded53cc9a2d8e30891bb0d63724d25c37bef  $RUNNER_TEMP/rsync.tar.gz" | sha256sum -c -
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libssl-dev libxxhash-dev libzstd-dev liblz4-dev zlib1g-dev libpopt-dev libacl1-dev libattr1-dev libidn2-dev
-          tar -xzf "$RUNNER_TEMP/rsync.tar.gz" -C "$RUNNER_TEMP"
-          cd "$RUNNER_TEMP/rsync-3.5.1"
-          ./configure --prefix="$RUNNER_TEMP/current-rsync" --disable-md2man
-          make -j2
-          make install
-          echo "$RUNNER_TEMP/current-rsync/bin" >> "$GITHUB_PATH"
       - run: uv sync --locked --group dev --python 3.12
       - run: uv run ruff check src tests scripts/preview.py hatch_build.py
       - name: Check shell syntax
         run: |
           for script in scripts/*.sh; do /bin/sh -n "$script"; done
-          bash -n src/cloudrig/bootstrap.sh
       - run: uv run pytest -q
       - run: go test -race ./...
         working-directory: admin

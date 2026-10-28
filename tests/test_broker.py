@@ -19,7 +19,7 @@ def test_privileged_calls_always_use_fresh_sudo_and_fixed_helper(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setenv("VAST_API_KEY", "secret")
-    for operation in ["login", "approve", "start", "destroy"]:
+    for operation in ["login", "approve", "stop", "destroy"]:
         broker.admin(operation, "vastai", "1")
     assert len(calls) == 4
     for argv, kwargs in calls:
@@ -33,16 +33,15 @@ def test_privileged_calls_always_use_fresh_sudo_and_fixed_helper(monkeypatch):
 def test_mutations_do_not_go_through_read_service(monkeypatch):
     privileged, normal = [], []
     monkeypatch.setattr(broker, "admin", lambda *v: privileged.append(v) or {"id": "created"})
-    monkeypatch.setattr(broker, "rpc", lambda *a, **k: normal.append((a, k)) or {"protocol": 3})
+    monkeypatch.setattr(broker, "rpc", lambda *a, **k: normal.append((a, k)) or {"protocol": 4})
     api = broker.BrokerProvider("vastai")
     offer = Demo().offers("5090")[0]
     assert api.rent(Rental(offer, "training", 40, api.default_image)) == "created"
-    api.start("1")
     api.destroy("1")
     api.approve("1")
     api.stop("1")
-    assert [row[0] for row in privileged] == ["rent", "start", "destroy", "approve"]
-    assert normal == [(("health", "vastai"), {}), (("stop", "vastai"), {"id": "1"})]
+    assert [row[0] for row in privileged] == ["rent", "destroy", "approve", "stop"]
+    assert normal == [(("health", "vastai"), {})]
 
 
 def test_user_owned_binary_path_is_not_a_trusted_helper(tmp_path):
@@ -96,7 +95,7 @@ def test_failed_rental_is_retryable_only_when_the_protected_journal_confirms_no_
 
     def rpc(operation, *args, **kwargs):
         if operation == "health":
-            return {"protocol": 3}
+            return {"protocol": 4}
         if recorded == "unavailable":
             fail()
         return {"state": recorded}
@@ -128,7 +127,7 @@ def test_rental_failure_keeps_helper_reason_instead_of_hiding_it(monkeypatch, so
     monkeypatch.setattr(
         broker,
         "rpc",
-        lambda operation, *a, **k: {"protocol": 3} if operation == "health" else {"state": "absent"},
+        lambda operation, *a, **k: {"protocol": 4} if operation == "health" else {"state": "absent"},
     )
     api = broker.BrokerProvider("vastai")
     with pytest.raises(RentalNotSubmitted) as error:
@@ -142,5 +141,5 @@ def test_old_helper_is_rejected_before_authentication_or_rental(monkeypatch):
     monkeypatch.setattr(broker, "rpc", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(broker, "admin", lambda *a: pytest.fail("Invoked an incompatible helper"))
     api = broker.BrokerProvider("vastai")
-    with pytest.raises(RentalNotSubmitted, match="reinstall"):
+    with pytest.raises(RentalNotSubmitted, match="service update"):
         api.rent(Rental(Demo().offers("5090")[0], "training", 40, api.default_image))

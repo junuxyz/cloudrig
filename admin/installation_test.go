@@ -8,7 +8,7 @@ import (
 )
 
 func TestInstallationChecksTheRunningServiceProtocol(t *testing.T) {
-	for _, reply := range []string{`{"data":{"protocol":3}}`, `{"data":{"protocol":2}}`, `{"error":"unavailable"}`, `broken`} {
+	for _, reply := range []string{`{"data":{"protocol":4}}`, `{"data":{"protocol":2}}`, `{"error":"unavailable"}`, `broken`} {
 		t.Run(reply, func(t *testing.T) {
 			s := testStore(t)
 			listener, err := net.Listen("unix", filepath.Join(s.Run, "api.sock"))
@@ -29,7 +29,7 @@ func TestInstallationChecksTheRunningServiceProtocol(t *testing.T) {
 				fmt.Fprintln(connection, reply)
 			}()
 			err = s.checkService()
-			if (err == nil) != (reply == `{"data":{"protocol":3}}`) {
+			if (err == nil) != (reply == `{"data":{"protocol":4}}`) {
 				t.Fatal("wrong readiness result", err)
 			}
 			<-done

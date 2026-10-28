@@ -220,7 +220,6 @@ func (s *Store) rent(a RentArgs) (string, error) {
 	return id, nil
 }
 
-// Recovery changes the journal and connection authority, never provider billing state.
 func (s *Store) recoverRental(provider, name, id string) error {
 	if !validProvider(provider) || !namePattern.MatchString(name) ||
 		id != "-" && !idPattern.MatchString(id) {
@@ -300,72 +299,41 @@ func (s *Store) recoverRental(provider, name, id string) error {
 }
 
 func (s *Store) mutate(provider, id, action string) error {
-	if !validProvider(provider) {
-		return errors.New("invalid resource")
-	}
-	i, e := s.instance(provider, id)
-	if e != nil {
-		return e
-	}
-	if action != "start" && action != "destroy" {
+	if !validProvider(provider) || (action != "stop" && action != "destroy") {
 		return errDenied
 	}
-	message := fmt.Sprintf("%s %s/%s (%s)", strings.ToUpper(action), provider, id, i.Name)
-	quoted := 0.0
-	if action == "start" {
-		quoted, e = s.resumeQuote(provider, id)
-		if e != nil {
-			return e
-		}
-		message += fmt.Sprintf("\nCurrent compute quote: $%.6f/hour. Storage is billed separately.", quoted)
-	} else {
-		message += "\nInstance-local files will be deleted."
+	item, err := s.instance(provider, id)
+	if err != nil {
+		return err
 	}
-
-	if _, e = fmt.Fprintln(s.Output, message); e != nil {
-		return e
+	fmt.Fprintf(s.Output, "%s %s/%s (%s)\n", strings.ToUpper(action), provider, id, item.Name)
+	if action == "destroy" {
+		fmt.Fprintln(s.Output, "Instance-local files will be deleted.")
 	}
-	unlock, e := s.lock()
-	if e != nil {
-		return e
+	unlock, err := s.lock()
+	if err != nil {
+		return err
 	}
 	defer unlock()
-	db, e := s.readDB()
-	if e != nil {
-		return e
-	}
-	if action == "start" {
-		fresh, e := s.resumeQuote(provider, id)
-		if e != nil {
-			return e
-		}
-		if fresh > quoted+0.000001 {
-			return errors.New("resume price increased; retry to obtain a fresh quote")
-		}
+	db, err := s.readDB()
+	if err != nil {
+		return err
 	}
 	if action == "destroy" {
 		if rec, ok := db.Records[keyOf(provider, id)]; ok {
 			rec.Revoked = true
 			db.Records[keyOf(provider, id)] = rec
-			if e = writeJSON(filepath.Join(s.Root, "resources.json"), db); e != nil {
-				return e
+			if err = writeJSON(filepath.Join(s.Root, "resources.json"), db); err != nil {
+				return err
 			}
 		}
 	}
-	_, e = s.transition(provider, id, action)
-	if e != nil {
-		return e
+	if _, err = s.transition(provider, id, action); err != nil {
+		return err
 	}
 	if action == "destroy" {
 		delete(db.Records, keyOf(provider, id))
 		return writeJSON(filepath.Join(s.Root, "resources.json"), db)
-	}
-	if action == "start" {
-		if rec, ok := db.Records[keyOf(provider, id)]; ok && !rec.Revoked {
-			rec.Connecting = true
-			db.Records[keyOf(provider, id)] = rec
-			return writeJSON(filepath.Join(s.Root, "resources.json"), db)
-		}
 	}
 	return nil
 }

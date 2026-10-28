@@ -37,10 +37,10 @@ func testStore(t *testing.T) *Store {
 	return s
 }
 
-func TestStopRequiresRootApprovedResource(t *testing.T) {
+func TestPublicAPICannotStopCompute(t *testing.T) {
 	s := testStore(t)
 	if _, e := s.public(Request{Op: "stop", Provider: "vastai", ID: "1"}); e == nil {
-		t.Fatal("unapproved stop allowed")
+		t.Fatal("unprivileged stop allowed")
 	}
 }
 
@@ -163,7 +163,6 @@ func TestNativeAgentCannotExportOrPerformUnboundSignatures(t *testing.T) {
 	}
 }
 
-// Exercise an actual SSH authentication through the constrained proxy, using only fixture keys.
 func TestApprovedSSHAuthenticationThroughProxy(t *testing.T) {
 	if _, e := os.Stat("/usr/sbin/sshd"); e != nil {
 		t.Skip("sshd not installed")

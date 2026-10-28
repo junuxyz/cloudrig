@@ -1,12 +1,11 @@
 import json
-import subprocess
 import sys
 from dataclasses import replace
 
 import pytest
 
 from cloudrig.cli import main
-from cloudrig.connections import check_remote_rsync, check_rsync, install_alias, run, sync_command
+from cloudrig.connections import install_alias, run
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError
 
@@ -65,7 +64,7 @@ def test_resource_alias_injection_rejected(value):
 
 
 def test_ordinary_instance_without_root_grant_cannot_connect():
-    with pytest.raises(CrigError, match="approve"):
+    with pytest.raises(CrigError, match="Authorize"):
         install_alias(Demo().instances()[0])
 
 
@@ -73,25 +72,6 @@ def test_ordinary_instance_without_root_grant_cannot_connect():
 def test_host_address_cannot_inject_ssh_config(host):
     with pytest.raises(CrigError):
         install_alias(replace(Demo().instances()[0], host=host))
-
-
-@pytest.mark.parametrize("local", ["~", "~/.ssh/", "~/.aws/credentials", "~/.zshrc", "/"])
-def test_transfer_refuses_host_credential_paths(local):
-    for upload in [True, False]:
-        with pytest.raises(CrigError, match="credential"):
-            sync_command(Demo().instances()[0], local, "/workspace/", upload)
-
-
-def test_outdated_rsync_is_refused(monkeypatch):
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="rsync version 3.4.4\nSECRET", stderr=""),
-    )
-    for check in [check_rsync, lambda: check_remote_rsync("alias")]:
-        with pytest.raises(CrigError, match="3.5.0") as error:
-            check()
-        assert "SECRET" not in str(error.value)
 
 
 def test_total_quote_overflow_is_refused():

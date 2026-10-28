@@ -4,7 +4,8 @@ For user onboarding, follow [docs/agents.md](docs/agents.md).
 
 Read [docs/architecture.md](docs/architecture.md) before changing responsibilities or saved state.
 
-- Keep CLI, project workflow, and root-helper responsibilities explicit.
+- Keep CLI, editor connection, and root-helper responsibilities explicit.
+- Keep the current scope to rent, VS Code, stop, and delete. Deferred workflows belong on their preservation branch.
 - Prefer direct functions and small data types. Add abstractions when implemented callers need them.
 - Migrate callers, then delete unused paths and parameters. Do not keep wrappers for old internal APIs.
 - Validate configuration, provider responses, and privileged requests where they enter the application.

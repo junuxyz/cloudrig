@@ -1,10 +1,10 @@
 # Cloudrig
 
-Rent a cloud GPU, upload your project, and open it in VS Code from your terminal.
+Rent a cloud GPU, open VS Code, stop it, and delete it from your terminal.
 
-![Cloudrig dashboard with demo data](docs/workspaces.svg)
+![Cloudrig dashboard with demo data](docs/instances.svg)
 
-## Try it
+## Start
 
 Download your platform wheel from [Releases](https://github.com/junuxyz/cloudrig/releases):
 
@@ -13,10 +13,8 @@ uv tool install ./cloudrig-*.whl
 crig
 ```
 
-Run `crig --demo` to preview without an account. Supports macOS and Linux.
+Try `crig --demo` without an account. Supports macOS and Linux.
 
-[Get started](docs/getting-started.md) · [Agent setup](docs/agents.md) · [Command reference](docs/guide.md)
+[Get started](docs/getting-started.md) · [Commands](docs/guide.md) · [Milestones](docs/milestones.md)
 
-Experimental software built with AI assistance. See [verification status](docs/verification.md).
-
-[MIT license](LICENSE) · [Contributing](CONTRIBUTING.md)
+Experimental software built with AI assistance. [Verification](docs/verification.md) · [MIT license](LICENSE)

@@ -1,20 +1,15 @@
 import ipaddress
-import os
 import re
-import shlex
 import shutil
 import subprocess
-import tempfile
 import time
-from collections.abc import Callable
-from importlib.resources import files
 from pathlib import Path
 
 from filelock import FileLock
 
 from cloudrig import broker
 from cloudrig.models import CrigError, Instance, RateLimited, safe_text
-from cloudrig.security import check_transfer_path, child_environment, private_directory, regular_file
+from cloudrig.security import child_environment, private_directory, regular_file
 from cloudrig.state import atomic_write
 
 
@@ -62,10 +57,10 @@ def ssh_string(value: str) -> str:
 def verify_grant(instance: Instance) -> tuple[Path, Path, Path]:
     if not instance.approved:
         raise CrigError(
-            f"Authorize this GPU first: crig {instance.id} approve. This needs fresh sudo authentication."
+            f"Authorize this GPU first: crig {instance.id} code. This needs fresh sudo authentication."
         )
     if not all((instance.public_key, instance.agent_socket, instance.known_hosts)):
-        raise CrigError(f"SSH setup is still in progress. Reconnect with crig {instance.id} ssh.")
+        raise CrigError(f"SSH setup is still in progress. Reconnect with crig {instance.id} code.")
     paths = [Path(value) for value in (instance.public_key, instance.agent_socket, instance.known_hosts)]
     root = broker.PUBLIC_ROOT.resolve()
     for path in paths:
@@ -156,96 +151,9 @@ def install_alias(instance: Instance) -> str:
     return name
 
 
-def ssh_command(name: str, *arguments: str, tty: bool = False) -> list[str]:
-    config = Path.home() / ".ssh" / "cloudrig" / "config"
-    argv = [require("ssh"), "-F", str(config)]
-    if tty:
-        argv.append("-t")
-    return [*argv, name, *arguments]
-
-
-def wait_ready(
-    provider,
-    identifier: str,
-    timeout: float = 300,
-    *,
-    startup_script: str | None = None,
-    progress: Callable[[str], None] | None = None,
-) -> Instance:
-    deadline = time.monotonic() + timeout
-    if progress:
-        progress("Waiting for the GPU")
-    while True:
-        if time.monotonic() >= deadline:
-            raise CrigError(
-                f"Instance {identifier} remains rented; connection setup timed out. "
-                f"Retry with crig {identifier} code."
-            )
-        try:
-            item = provider.instance(identifier)
-        except RateLimited as error:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise CrigError(
-                    f"Provider is still limiting requests. Instance {identifier} remains rented. "
-                    f"Retry its connection with crig {identifier} code."
-                ) from None
-            if progress:
-                progress(str(error))
-            time.sleep(min(error.seconds, remaining))
-            if progress:
-                progress("Waiting for the GPU")
-            continue
-        if item.status in {"error", "failed", "terminated", "exited", "stopped"}:
-            raise CrigError(f"Instance {identifier} is {item.status}. Inspect it with crig --rented.")
-        if (
-            item.host
-            and item.port
-            and item.direct
-            and item.approved
-            and item.agent_socket
-            and Path(item.agent_socket).is_socket()
-            and item.public_key
-            and Path(item.public_key).is_file()
-        ):
-            name = install_alias(item)
-            if progress:
-                progress("Connecting over SSH")
-            result = subprocess.run(
-                [
-                    require("ssh"),
-                    "-F",
-                    str(Path.home() / ".ssh" / "cloudrig" / "config"),
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=5",
-                    name,
-                    "true",
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                env=child_environment(),
-            )
-            if result.returncode == 0:
-                if progress:
-                    progress("Running startup script")
-                run_startup(name, timeout=max(1, deadline - time.monotonic()), script=startup_script)
-                if progress:
-                    progress("SSH and startup ready")
-                return item
-        if time.monotonic() >= deadline:
-            raise CrigError(
-                f"Instance {identifier} is still rented; SSH is not ready. "
-                f"Reconnect with crig {identifier} ssh. No second instance was created."
-            )
-        time.sleep(10)
-
-
 def full_ssh(instance: Instance) -> None:
     if not instance.direct:
-        raise CrigError("This pod exposes proxy SSH only. Expose 22/tcp for VS Code, commands, or rsync.")
+        raise CrigError("This pod exposes proxy SSH only. Expose 22/tcp for VS Code.")
 
 
 def open_code(instance: Instance, remote_path: str) -> None:
@@ -256,231 +164,29 @@ def open_code(instance: Instance, remote_path: str) -> None:
     run(["code", "--remote", f"ssh-remote+{name}", remote_path])
 
 
-# Current upstream security baseline, checked against rsync.samba.org/security.html.
-MIN_RSYNC = (3, 5, 0)
-SECRET_EXCLUDES = (
-    ".git/",
-    ".venv/",
-    "__pycache__/",
-    ".pytest_cache/",
-    ".ruff_cache/",
-    "node_modules/",
-    "dist/",
-    ".env",
-    ".env.*",
-    ".ssh/",
-    ".aws/",
-    ".azure/",
-    ".kube/",
-    ".gnupg/",
-    ".config/",
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-    "id_rsa*",
-    "id_ed25519*",
-    "cloudrig_ed25519*",
-    "*.pem",
-    "*.key",
-    "credentials.json",
-    "service-account*.json",
-    "secrets.*",
-    "*.secrets",
-)
-
-
-def upload_flags(local: Path) -> list[str]:
-    patterns = list(SECRET_EXCLUDES)
-    root = local if local.is_dir() else local.parent
-    ignore = root / ".crigignore"
-    if ignore.exists() or ignore.is_symlink():
-        if ignore.is_symlink() or not ignore.is_file():
-            raise CrigError(".crigignore must be a regular file inside the project.")
-        for pattern in ignore.read_text().splitlines():
-            pattern = pattern.strip()
-            if pattern and not pattern.startswith("#"):
-                if pattern.startswith("!"):
-                    raise CrigError(".crigignore supports exclusion patterns only, without ! reinclusions.")
-                patterns.append(pattern)
-    git = shutil.which("git")
-    in_repository = any((parent / ".git").exists() for parent in (root, *root.parents))
-    if git:
+def connect_editor(api, identifier: str, timeout: float = 300, progress=None) -> None:
+    require("code")
+    require("ssh")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if progress:
+            progress("Waiting for the editor connection")
         try:
-            ignored = subprocess.run(
-                [
-                    git,
-                    "-c",
-                    "core.fsmonitor=false",
-                    "ls-files",
-                    "--others",
-                    "--ignored",
-                    "--exclude-standard",
-                    "--directory",
-                    "-z",
-                    "--",
-                    ".",
-                ],
-                cwd=root,
-                capture_output=True,
-                check=False,
-                timeout=20,
-                env=child_environment(),
-            )
-        except subprocess.TimeoutExpired as error:
-            raise CrigError(
-                "Git upload exclusions timed out. Check the repository before uploading."
-            ) from error
-        if ignored.returncode == 0:
-            for name in os.fsdecode(ignored.stdout).split("\0"):
-                if name:
-                    escaped = re.sub(r"([\\*?\[])", r"\\\1", name)
-                    patterns.append("/" + escaped)
-        elif in_repository:
-            raise CrigError("Cannot read Git upload exclusions. Repair Git before uploading.")
-    elif in_repository:
-        raise CrigError("Install git to apply this project's upload exclusions.")
-    return [f"--filter=- {pattern}" for pattern in patterns]
-
-
-def preview_upload(root: Path) -> None:
-    from cloudrig.terminal import console
-
-    check_rsync()
-    flags = upload_flags(root)
-    with tempfile.TemporaryDirectory(prefix="cloudrig-upload-") as target:
-        result = subprocess.run(
-            [
-                require("rsync"),
-                "-rln",
-                "--safe-links",
-                "--out-format=%n",
-                *flags,
-                "--",
-                str(root) + "/",
-                target + "/",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-            env=child_environment(),
-        )
-    if result.returncode:
-        raise CrigError("Cannot preview this upload. Check file permissions and ignore patterns.")
-    console.print(result.stdout or "No files to upload.", markup=False)
-    console.print("Preview only. No remote files changed. Filename rules do not detect every secret.")
-
-
-def default_startup_script() -> str:
-    return files("cloudrig").joinpath("bootstrap.sh").read_text(encoding="utf-8")
-
-
-def load_startup_script(path: str | None, *, root: Path = Path(".")) -> str | None:
-    if not path:
-        return None
-    safe_text(path)
-    source = Path(path).expanduser()
-    source = (root / source).resolve()
-    check_transfer_path(source)
-    try:
-        return source.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
-        raise CrigError(f"Cannot read startup script: {source}") from error
-
-
-def run_startup(name: str, timeout: float, *, script: str | None = None) -> None:
-    if script == "":
-        return
-    minimum = ".".join(map(str, MIN_RSYNC))
-    command = (
-        'mkdir -p "$HOME/.cache/cloudrig" && '
-        f'bash -se -- {minimum} > "$HOME/.cache/cloudrig/startup.log" 2>&1'
+            item = api.instance(identifier)
+        except RateLimited as error:
+            if progress:
+                progress(str(error))
+            time.sleep(min(error.seconds, max(0, deadline - time.monotonic())))
+            continue
+        if item.status in {"stopped", "exited", "failed", "error", "terminated"}:
+            raise CrigError(f"Instance {identifier} is {item.status}. Choose a running GPU.")
+        if not item.approved and item.status == "running" and item.host and item.port:
+            api.approve(identifier)
+            continue
+        if item.host and item.port and item.agent_socket and Path(item.agent_socket).is_socket():
+            open_code(item, "/workspace")
+            return
+        time.sleep(5)
+    raise CrigError(
+        f"Editor connection is not ready. GPU {identifier} is still rented. Retry crig {identifier} code."
     )
-    try:
-        result = subprocess.run(
-            ssh_command(name, command),
-            input=default_startup_script() if script is None else script,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-            env=child_environment(),
-        )
-    except subprocess.TimeoutExpired as error:
-        raise CrigError(
-            "GPU startup script timed out. Reconnect to retry on the same instance. "
-            "Remote log: ~/.cache/cloudrig/startup.log."
-        ) from error
-    if result.returncode == 77 and script is None:
-        raise CrigError("Automatic GPU tool installation needs root SSH. Preinstall rsync 3.5.0+ and uv.")
-    if result.returncode:
-        raise CrigError("GPU startup script failed. Remote log: ~/.cache/cloudrig/startup.log.")
-
-
-def check_rsync() -> tuple[int, int, int]:
-    result = subprocess.run(
-        [require("rsync"), "--version"], capture_output=True, text=True, check=False, env=child_environment()
-    )
-    match = re.search(r"^rsync\s+version\s+(\d+)\.(\d+)\.(\d+)", result.stdout, re.MULTILINE)
-    if result.returncode or not match or tuple(map(int, match.groups())) < MIN_RSYNC:
-        raise CrigError(
-            "File transfer requires upstream rsync 3.5.0+ locally. macOS: brew install rsync. "
-            "Use an updated rsync on the remote host too; legacy compatibility mode is disabled."
-        )
-    return tuple(map(int, match.groups()))
-
-
-def check_remote_rsync(name: str) -> None:
-    try:
-        result = subprocess.run(
-            ssh_command(name, "rsync --version"),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=20,
-            env=child_environment(),
-        )
-    except subprocess.TimeoutExpired as error:
-        raise CrigError("Timed out checking remote rsync. No file transfer was started.") from error
-    match = re.search(r"^rsync\s+version\s+(\d+)\.(\d+)\.(\d+)", result.stdout, re.MULTILINE)
-    if result.returncode or not match or tuple(map(int, match.groups())) < MIN_RSYNC:
-        raise CrigError(
-            "Remote file transfer requires upstream rsync 3.5.0+. Update it on the GPU host first."
-        )
-
-
-def sync_command(
-    instance: Instance,
-    local: str,
-    remote: str,
-    upload: bool,
-    dry_run: bool = False,
-) -> list[str]:
-    full_ssh(instance)
-    if not remote.startswith("/") or any(c in remote for c in "\n\r\x00"):
-        raise CrigError("Use an absolute remote path, for example /workspace/project/.")
-    check_transfer_path(Path(local).expanduser().resolve())
-    name = install_alias(instance)
-    check_rsync()
-    check_remote_rsync(name)
-    endpoint = f"{name}:{remote}"
-    transport = shlex.join(ssh_command(name)[:-1])
-    argv = ["rsync", "-rlptvhP", "--protect-args", "--safe-links", "--chmod=ugo-s", "-e", transport]
-    if dry_run:
-        argv.append("--dry-run")
-    if upload:
-        argv.extend(upload_flags(Path(local).expanduser().resolve()))
-    argv.extend(
-        ["--", str(Path(local).expanduser().absolute()), endpoint]
-        if upload
-        else [
-            "--",
-            endpoint,
-            str(Path(local).expanduser().absolute()),
-        ]
-    )
-    # Path.absolute strips trailing '/', which changes rsync directory semantics.
-    local_index = -2 if upload else -1
-    if local.endswith("/") and not argv[local_index].endswith("/"):
-        argv[local_index] += "/"
-    return argv

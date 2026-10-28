@@ -12,7 +12,7 @@ from cloudrig.models import CrigError, Instance, Offer, RateLimited, RentalNotSu
 from cloudrig.security import child_environment
 
 ROOT_UID = 0
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 HELPER = Path(
     "/Library/PrivilegedHelperTools/cloudrig-admin"
     if sys.platform == "darwin"
@@ -75,7 +75,7 @@ def rpc(operation: str, provider: str, **values):
 
 
 def admin(operation: str, *arguments: str):
-    if operation not in {"login", "approve", "rent", "start", "destroy", "recover", "self-test"}:
+    if operation not in {"login", "rent", "stop", "destroy", "approve", "recover", "self-test"}:
         raise CrigError("Unknown privileged operation.")
     try:
         trusted_root_path(HELPER)
@@ -84,7 +84,7 @@ def admin(operation: str, *arguments: str):
     result = subprocess.run(
         ["/usr/bin/sudo", "-k", "--", str(HELPER), operation, *arguments],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE if operation in {"rent", "start", "destroy"} else None,
+        stderr=subprocess.PIPE if operation in {"rent", "stop", "destroy"} else None,
         stdin=None,
         text=True,
         check=False,
@@ -107,7 +107,7 @@ def admin(operation: str, *arguments: str):
 def check_service(provider: str) -> None:
     health = rpc("health", provider)
     if not isinstance(health, dict) or health.get("protocol") != PROTOCOL_VERSION:
-        raise CrigError("Rebuild and reinstall the Cloudrig helper. Its protocol is outdated.")
+        raise CrigError("Cloudrig needs a service update. Run crig in your own terminal.")
 
 
 class BrokerProvider:
@@ -125,6 +125,9 @@ class BrokerProvider:
 
     def instance(self, identifier: str) -> Instance:
         return Instance(**rpc("instance", self.name, id=identifier))
+
+    def approve(self, identifier: str):
+        admin("approve", self.name, identifier)
 
     def rent(self, rental) -> str:
         try:
@@ -160,14 +163,8 @@ class BrokerProvider:
     def recover(self, name: str, identifier: str):
         return admin("recover", self.name, name, identifier)
 
-    def approve(self, identifier: str):
-        admin("approve", self.name, identifier)
-
     def stop(self, identifier: str):
-        rpc("stop", self.name, id=identifier)
-
-    def start(self, identifier: str):
-        admin("start", self.name, identifier)
+        admin("stop", self.name, identifier)
 
     def destroy(self, identifier: str):
         admin("destroy", self.name, identifier)

@@ -26,21 +26,17 @@ def setup(argv: list[str]) -> bool:
         console.print("Protected service is ready.")
         return True
     from cloudrig.cli import login
-    from cloudrig.workspace import preflight
 
     console.print("\nCloudrig setup\n")
-    console.print("1. Vast.ai, for project workspaces")
-    console.print("2. RunPod, for marketplace commands only")
+    console.print("1. Vast.ai")
+    console.print("2. RunPod")
     console.print("0. Cancel")
     choice = Prompt.ask("Provider", choices=["0", "1", "2"], default="1")
     if choice == "0":
         return False
     provider = "vastai" if choice == "1" else "runpod"
-    preflight(upload=True, editor=False)
     ensure_service(provider, args.source)
     login(provider)
     state.update(provider=provider)
     console.print("\nSetup complete.")
-    if provider == "runpod":
-        console.print("RunPod currently uses crig --provider runpod --gpu QUERY.")
     return True

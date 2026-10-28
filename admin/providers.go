@@ -404,13 +404,13 @@ func (s *Store) instance(provider, id string) (Instance, error) {
 }
 
 func (s *Store) transition(p, id, action string) (any, error) {
-	if !idPattern.MatchString(id) {
-		return nil, errors.New("invalid ID")
+	if !idPattern.MatchString(id) || (action != "stop" && action != "destroy") {
+		return nil, errors.New("invalid instance action")
 	}
 	if p == "vastai" {
 		method := "PUT"
 		path := "/api/v0/instances/" + id + "/"
-		body := any(map[string]string{"state": map[string]string{"start": "running", "stop": "stopped"}[action]})
+		body := any(map[string]string{"state": "stopped"})
 		if action == "destroy" {
 			method = "DELETE"
 			body = nil
@@ -421,45 +421,4 @@ func (s *Store) transition(p, id, action string) (any, error) {
 		return s.call(p, "DELETE", "/v2/pods/"+id, nil)
 	}
 	return s.call(p, "POST", "/v2/pods/"+id+"/action", map[string]string{"action": action})
-}
-
-func (s *Store) resumeQuote(provider, id string) (float64, error) {
-	if provider == "vastai" {
-		i, e := s.instance(provider, id)
-		if e != nil {
-			return 0, e
-		}
-		if i.ContractRate <= 0 || !validNumber(i.ContractRate) {
-			return 0, errors.New("existing contract has no verifiable compute quote; refusing billable start")
-		}
-		return i.ContractRate, nil
-	}
-	raw, e := s.call("runpod", "GET", "/v2/pods/"+id, nil)
-	if e != nil {
-		return 0, e
-	}
-	pod := object(raw)
-	gpu := object(pod["gpu"])
-	count := num(gpu["count"])
-	if !validNumber(count) || count < 1 || count > 64 || math.Trunc(count) != count {
-		return 0, errors.New("cannot verify the pod GPU count; refusing billable start")
-	}
-	cloud := strings.ToLower(text(pod["cloud"]))
-	if cloud != "secure" && cloud != "community" {
-		return 0, errors.New("unknown pod cloud tier")
-	}
-	catalog, e := s.call("runpod", "GET", "/v2/catalog/gpus", nil)
-	if e != nil {
-		return 0, e
-	}
-	for _, entry := range array(object(catalog)["gpus"]) {
-		row := object(entry)
-		if text(row["id"]) == text(gpu["id"]) {
-			price := num(object(row["price"])[cloud]) * count
-			if validNumber(price) && price > 0 {
-				return price, nil
-			}
-		}
-	}
-	return 0, errors.New("cannot establish the current compute quote for this pod")
 }

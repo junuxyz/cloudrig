@@ -1,77 +1,33 @@
 # Start here
 
-Download your platform wheel from [Releases](https://github.com/junuxyz/cloudrig/releases)
-into an empty folder, then run:
+Install the wheel matching your platform from [Releases](https://github.com/junuxyz/cloudrig/releases):
 
 ```sh
 uv tool install ./cloudrig-*.whl
 crig
 ```
 
-This installs `crig` globally. Run `crig` from any folder after the initial setup.
-The first launch guides account setup, then opens the dashboard. To try it without an account:
+Requires uv, Python 3.11+, and macOS 13+ or Linux with systemd. Release wheels include the protected
+service; no Go installation or source path is needed. For source builds, see [Contributing](../CONTRIBUTING.md).
 
-```sh
-crig --demo
-```
+## First use
 
-## First-time setup
+1. Choose Vast.ai or RunPod. Create an account and add credit on its website.
+2. Approve protected service installation in your own terminal.
+3. Enter an API key. The login screen links to its provider's key page.
+4. Open GPU offers, select a GPU, review its price, and approve the rental with sudo.
+5. In Instances, press Enter to open VS Code, stop the GPU, or delete it.
 
-Requires macOS 13+ or Linux on ARM64 or x86-64, uv, Python 3.11+, system OpenSSH 8.9+, and rsync 3.5.0+.
-Release wheels include the protected service. No Go installation or source folder is needed.
-For a source checkout, follow [Contributing](../CONTRIBUTING.md).
-On macOS, install current rsync with `brew install rsync`. VS Code needs Remote - SSH.
-Use `--no-code` on project commands to skip the editor.
+Editor connections require VS Code with Remote - SSH, the `code` command on PATH, and system
+OpenSSH 8.9+. You can rent and manage GPUs without an editor. VS Code opens `/workspace` on the GPU.
+Project files and dependencies are not uploaded or installed automatically.
 
-Choose Vast.ai for projects. Create an account, add credit, and enter a new API key in the
-protected prompt. RunPod currently supports marketplace commands only.
-The login screen links to [Vast.ai keys](https://console.vast.ai/manage-keys/)
-or [RunPod settings](https://console.runpod.io/user/settings) if you need to create a key.
-
-Setup checks the bundled installation files and asks before installing the protected service. Only Cloudrig's helper requires fresh sudo
-authentication; other sudo commands keep their existing settings. Read [security.md](security.md).
-Setup does not rent a GPU. Repeating setup replaces the key and revokes that provider's SSH approvals.
-Run `crig` after installing a newer wheel to update the service without replacing your API key.
-Use `crig doctor` to check an existing setup without changing it.
-
-To run account setup separately from another folder:
-
-```sh
-crig setup
-```
-
-## Open a project
-
-```sh
-crig up /path/to/project --setup
-```
-
-Choose a GPU, review the rental, and authenticate with sudo. The helper then proceeds without another prompt.
-The first connection uploads files and installs detected uv or pip dependencies.
-Later connections reuse the GPU and preserve remote edits.
-
-The dashboard shows progress. Click View setup or press `g` for details.
-You can close it and return later. Keep this computer awake and connected during preparation.
-Add `--numbered` for numbered GPU choices.
-
-When finished:
-
-```sh
-crig down /path/to/project
-```
-
-Closing the editor does not stop billing. Storage charges may remain after compute stops.
-See [what agents can do](agent-isolation.md), [agent setup](agents.md),
-[project settings](project-workspaces.md), or the [command reference](guide.md).
+Closing the dashboard or editor does not stop the GPU. Stop it when finished; storage may still
+cost money. Deleting removes instance-local files.
 
 ## Updates
 
-The dashboard shows a notice when a newer stable release is available. Run:
+The dashboard checks for a newer stable release every ten days. Run `crig update` to download and
+verify it. GitHub CLI is required for signature verification. Your API keys and rental records stay.
 
-```sh
-crig update
-```
-
-Updates require GitHub CLI for release-signature verification. Cloudrig keeps your API keys and
-asks for administrator authentication only when its protected service needs installation.
-See [distribution](distribution.md) for first-install verification.
+See [commands](guide.md), [agent instructions](agents.md), and [security](security.md).

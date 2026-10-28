@@ -13,8 +13,8 @@ uv build
 ```
 
 Tests use temporary files, synthetic credentials, local servers, separate workers, and real
-OpenSSH and rsync tools. They cover recovery, prices, credential replacement, constrained signing,
-uploads, reconnects, preparation, and terminal controls. They do not rent GPUs or install a root service.
+OpenSSH tools. They cover recovery, prices, credential replacement, constrained signing,
+editor credentials, lifecycle operations, and terminal controls. They do not rent GPUs or install a root service.
 
 Platform wheels bundle the native helper, installation scripts, and file hashes. Local tests check
 bundle integrity, installation cancellation, service updates, and preservation of account setup.
@@ -25,9 +25,8 @@ Hosted builds and attestation verification have not been run from this checkout.
 
 - Install, update, and uninstall on macOS and Linux. Check ownership, signing access, and sudo policy.
 - Run `crig self-test` on the installed system; test-user fixtures do not prove root isolation.
-- Complete a real rental, upload, dependency install, GPU check, editor connection, output pull,
-  stop, and deletion. Confirm resource state and charges in the provider console.
-- Verify desktop notification display.
+- Complete a real rental, editor connection, stop, and deletion. Confirm resource state and charges in the provider console.
+- Verify the reduced core interface on narrow and wide terminals.
 
 Installer tests run the full script against temporary paths and simulated macOS/Linux services.
 They check restoration after failed file replacement, policy validation, service startup, and
@@ -37,3 +36,5 @@ installer. Provider tests check price changes before submission.
 Mocked responses do not prove live API compatibility. Recovery tests cover process and request
 failures, not power loss or disk faults.
 See [security.md](security.md) and the [test plan](test-plan.md).
+
+Project and transfer tests are preserved with their implementations on `deferred-project-workflows`.

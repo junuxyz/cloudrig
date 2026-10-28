@@ -17,7 +17,6 @@ type instanceRead struct {
 	until time.Time
 }
 
-// Only public reads share snapshots. Paid operations and recovery still read fresh state.
 func (s *Store) readInstances(provider string) ([]Instance, error) {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
@@ -43,7 +42,7 @@ func (s *Store) public(r Request) (any, error) {
 	}
 	switch r.Op {
 	case "health":
-		return map[string]int{"protocol": 3}, nil
+		return map[string]int{"protocol": 4}, nil
 	case "rental-status":
 		if !namePattern.MatchString(r.Query) {
 			return nil, errors.New("invalid rental name")
@@ -73,8 +72,8 @@ func (s *Store) public(r Request) (any, error) {
 		if e != nil {
 			return nil, e
 		}
-		for n, i := range rows {
-			rows[n] = s.publicGrant(i)
+		for n, item := range rows {
+			rows[n] = s.publicGrant(item)
 		}
 		return rows, nil
 	case "instance":
@@ -104,11 +103,6 @@ func (s *Store) public(r Request) (any, error) {
 			}
 		}
 		return nil, errors.New("instance not found")
-	case "stop":
-		if _, e := s.approved(r.Provider, r.ID); e != nil {
-			return nil, e
-		}
-		return s.transition(r.Provider, r.ID, "stop")
 	default:
 		return nil, errDenied
 	}

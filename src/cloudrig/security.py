@@ -57,31 +57,6 @@ def safe_diagnostic(error: Exception) -> dict:
     }
 
 
-def check_transfer_path(path: Path) -> None:
-    home = Path.home().resolve()
-    credential_dirs = [home / name for name in (".ssh", ".aws", ".azure", ".kube", ".gnupg", ".config")]
-    config_files = {
-        ".bashrc",
-        ".bash_profile",
-        ".zshrc",
-        ".zprofile",
-        ".profile",
-        ".gitconfig",
-        ".git-credentials",
-        ".netrc",
-        ".npmrc",
-        ".pypirc",
-    }
-    if (
-        path in {home, Path("/")}
-        or path.name in config_files
-        or any(path == root or root in path.parents for root in credential_dirs)
-    ):
-        raise CrigError(
-            "Refusing a home, credential, or shell-configuration path. Choose a project directory."
-        )
-
-
 def private_directory(path: Path) -> None:
     if not path.exists() and not path.is_symlink():
         path.mkdir(parents=True, mode=0o700, exist_ok=True)

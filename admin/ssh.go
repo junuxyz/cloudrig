@@ -113,7 +113,6 @@ func permittedFrame(b []byte) bool {
 	return false
 }
 
-// OpenSSH checks signatures against the approved host key and remote user.
 func (s *Store) proxy(c *net.UnixConn, rec Record, upstream string) {
 	defer c.Close()
 	if uid, e := peerUID(c); e != nil || uid != uint32(s.Owner.UID) && uid != 0 {
