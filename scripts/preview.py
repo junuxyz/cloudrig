@@ -10,14 +10,16 @@ from cloudrig.tui import CloudrigApp
 async def main():
     root = Path(__file__).resolve().parents[1] / "docs"
     previews = [
-        (CloudrigApp(Demo(), "5090", demo=True), (120, 36), "market.svg", None),
-        (CloudrigApp(Demo(), "5090", demo=True), (80, 24), "market-compact.svg", None),
-        (CloudrigApp(Demo(), "5090", demo=True), (120, 36), "checkout.svg", "enter"),
-        (CloudrigApp(Demo(), rented=True, demo=True), (120, 36), "instances.svg", None),
-        (CloudrigApp(Demo(), rented=True, demo=True), (120, 36), "instance-actions.svg", "enter"),
+        (CloudrigApp(Demo(), "5090", demo=True), (120, 36), "market.svg", None, "cloudrig"),
+        (CloudrigApp(Demo(), "5090", demo=True), (80, 24), "market-compact.svg", None, "cloudrig"),
+        (CloudrigApp(Demo(), "5090", demo=True), (120, 36), "checkout.svg", "enter", "cloudrig"),
+        (CloudrigApp(Demo(), "5090", demo=True), (120, 36), "checkout-light.svg", "enter", "cloudrig-light"),
+        (CloudrigApp(Demo(), rented=True, demo=True), (120, 36), "instances.svg", None, "cloudrig"),
+        (CloudrigApp(Demo(), rented=True, demo=True), (120, 36), "instance-actions.svg", "enter", "cloudrig"),
     ]
-    for app, size, filename, action in previews:
+    for app, size, filename, action, theme in previews:
         async with app.run_test(size=size) as pilot:
+            app.theme = theme
             await pilot.pause()
             if action:
                 await pilot.press(action)

@@ -85,10 +85,6 @@ class Offer:
         if self.reliability is not None and self.reliability > 1:
             raise CrigError("Invalid reliability value.")
 
-    @property
-    def title(self) -> str:
-        return f"{self.gpu} ×{self.count}" if self.count > 1 else self.gpu
-
     def total(self, disk: int) -> float | None:
         if self.disk_hourly_gb is None:
             return None

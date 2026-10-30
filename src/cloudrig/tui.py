@@ -5,7 +5,6 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
-from textual.color import Color
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
@@ -13,8 +12,23 @@ from textual.widgets import Button, DataTable, Input, Label, Static
 
 from cloudrig import __version__, state, updates
 from cloudrig.models import CrigError, Instance, InstanceAction, Offer, Rental
+from cloudrig.style import (
+    SPINNER,
+    SPINNER_INTERVAL,
+    THEMES,
+    css_variables,
+    gb,
+    gpu_label,
+    palette,
+    pct,
+    per_day,
+    per_hour,
+    per_month,
+    provider_label,
+    status_style,
+    usd,
+)
 
-ACCENT = "#a5b4fc"
 SORTS = ("price", "vram", "region", "gpus")
 SORT_COLUMNS = {
     "price": ("price/hr", "↑"),
@@ -22,49 +36,7 @@ SORT_COLUMNS = {
     "region": ("region", "↑"),
     "gpus": ("gpu", "↓"),
 }
-PULSE = ("●  ·  ·", "·  ●  ·", "·  ·  ●", "·  ●  ·")
 SIDEBAR_MIN_WIDTH = 104
-
-THEMES = (
-    Theme(
-        name="cloudrig",
-        primary=ACCENT,
-        secondary="#93c5fd",
-        accent=ACCENT,
-        warning="#fcd34d",
-        error="#fca5a5",
-        success="#86efac",
-        foreground="#ededed",
-        background="#0b0b0c",
-        surface="#111113",
-        panel="#18181b",
-        dark=True,
-        variables={
-            "input-selection-background": "#a5b4fc40",
-            "scrollbar": "#1f1f23",
-            "scrollbar-hover": "#2a2a2f",
-            "scrollbar-active": "#3a3a40",
-            "scrollbar-background": "#0b0b0c",
-            "scrollbar-background-hover": "#0b0b0c",
-            "scrollbar-background-active": "#0b0b0c",
-        },
-    ),
-    Theme(
-        name="cloudrig-light",
-        primary="#4f46e5",
-        secondary="#2563eb",
-        accent="#4f46e5",
-        warning="#a16207",
-        error="#b91c1c",
-        success="#15803d",
-        foreground="#18181b",
-        background="#fcfcfc",
-        surface="#f6f6f7",
-        panel="#efeff1",
-        dark=False,
-        variables={"input-selection-background": "#4f46e533"},
-    ),
-)
 
 
 def sorted_offers(offers: list[Offer], sort: str, disk: int) -> list[Offer]:
@@ -78,7 +50,7 @@ def sorted_offers(offers: list[Offer], sort: str, disk: int) -> list[Offer]:
 
 def rate(offer: Offer, disk: int) -> str:
     total = offer.total(disk)
-    return f"${total:.3f}" if total is not None else f"${offer.hourly:.3f}+"
+    return usd(offer.hourly, partial=True) if total is None else usd(total)
 
 
 def hourly(offer: Offer, disk: int) -> float:
@@ -86,52 +58,20 @@ def hourly(offer: Offer, disk: int) -> float:
     return total if total is not None else offer.hourly
 
 
-_THEME_COLORS: dict[str, tuple[Theme, dict[str, str]]] = {}
-
-
-def palette(app: App) -> dict[str, str]:
-    """Return theme colors for Rich text."""
-    # app.theme_variables can lag a theme change by one refresh.
-    theme = app.current_theme
-    cached = _THEME_COLORS.get(theme.name)
-    if cached is None or cached[0] is not theme:
-        cached = _THEME_COLORS[theme.name] = (theme, theme.to_color_system().generate())
-    values = cached[1]
-    background, foreground = Color.parse(values["background"]), Color.parse(values["foreground"])
-    return {
-        "bg": background.hex,
-        "fg": foreground.hex,
-        "muted": foreground.blend(background, 0.38).hex,
-        "faint": foreground.blend(background, 0.62).hex,
-        "primary": values["primary"],
-        "success": values["success"],
-        "warning": values["warning"],
-        "error": values["error"],
-    }
-
-
-def status_style(status: str, colors: dict[str, str]) -> tuple[str, str]:
-    if status == "running":
-        return "●", colors["success"]
-    if status in {"stopped", "exited"}:
-        return "○", colors["faint"]
-    return "◐", colors["warning"]
-
-
 def hints(text: Text, pairs: list[tuple[str, str]], colors: dict[str, str]) -> Text:
     for index, (key, label) in enumerate(pairs):
         text.append("   " if index else "")
-        text.append(key, style=colors["fg"])
-        text.append(f" {label}", style=colors["faint"])
+        text.append(key, style=colors["ink"])
+        text.append(f" {label}", style=colors["ink-3"])
     return text
 
 
 def field(text: Text, label: str, value: str | Text, colors: dict[str, str]) -> None:
-    text.append(f"\n{label:<13}", style=colors["faint"])
+    text.append(f"\n{label:<13}", style=colors["ink-3"])
     if isinstance(value, Text):
         text.append_text(value)
     else:
-        text.append(value, style=colors["fg"])
+        text.append(value, style=colors["ink"])
 
 
 class EscHint(Static):
@@ -147,6 +87,9 @@ class Dialog(ModalScreen):
             yield Label(title, classes="dialog-title")
             yield EscHint("esc", id="back", classes="esc")
 
+    def paint(self):
+        """Repaint Rich text, which keeps the colors of the theme it was built with."""
+
     def action_cancel(self):
         self.dismiss(None)
 
@@ -155,11 +98,12 @@ class Checkout(Dialog):
     def __init__(self, offer: Offer, image: str, disk: int):
         super().__init__()
         self.offer, self.image, self.disk = offer, image, disk
+        self.error = ""
 
     def compose(self) -> ComposeResult:
         offer = self.offer
         with Vertical(id="checkout", classes="dialog"):
-            yield from self.header(f"Rent {offer.title}")
+            yield from self.header(f"Rent {gpu_label(offer.gpu, offer.count)}")
             yield Static(id="checkout-title", classes="dialog-subtitle")
             with Horizontal(classes="form-row"):
                 yield Label("name", classes="form-label")
@@ -172,32 +116,28 @@ class Checkout(Dialog):
                 yield Label("image", classes="form-label")
                 yield Input(value=self.image, id="rental-image")
             yield Static(id="quote")
-            yield Static(id="checkout-note")
+            yield Static("Billing starts when rented.", classes="dialog-note")
             yield Static("", id="checkout-error")
             with Horizontal(classes="dialog-actions"):
-                yield Static(id="next-step")
+                yield Static("Asks for your password.", id="next-step")
                 yield Button("Cancel", id="cancel")
                 yield Button("Rent GPU", variant="primary", id="rent")
 
     def on_mount(self):
+        self.paint()
+        self.query_one("#rent", Button).focus()
+
+    def paint(self):
         colors = palette(self.app)
         offer = self.offer
-        provider = offer.provider + (f" {offer.cloud.lower()}" if offer.cloud else "")
+        provider = provider_label(offer.provider) + (f" {offer.cloud.lower()}" if offer.cloud else "")
         self.query_one("#checkout-title", Static).update(
-            Text(f"{offer.region}   {provider}   {offer.id}", style=colors["faint"])
-        )
-        self.query_one("#checkout-note", Static).update(
-            Text(
-                "Billing starts when rented. Stopping may keep storage charges. "
-                "Deleting removes the instance's files.",
-                style=colors["faint"],
-            )
-        )
-        self.query_one("#next-step", Static).update(
-            Text("Sudo will check the price before rental.", style=colors["faint"])
+            Text(f"{offer.region}   {provider}   {offer.id}", style=colors["ink-3"])
         )
         self.update_quote()
-        self.query_one("#rental-name", Input).focus()
+        error = self.query_one("#checkout-error", Static)
+        error.update(Text(self.error, style=colors["error"]))
+        error.display = bool(self.error)
 
     @on(Input.Changed, "#rental-disk")
     def disk_changed(self):
@@ -220,19 +160,18 @@ class Checkout(Dialog):
         total = offer.total(disk)
         text = Text()
         if total is None:
-            text.append(f"${offer.hourly:.3f}", style=f"bold {colors['fg']}")
-            text.append(" / hr  plus storage", style=colors["muted"])
-            text.append("\nThe storage rate is not in the GPU catalog.", style=colors["faint"])
+            text.append(usd(offer.hourly, partial=True), style=f"bold {colors['ink']}")
+            text.append("/hr", style=colors["ink-2"])
+            text.append("   plus storage", style=colors["ink-3"])
+            text.append("\nThe storage rate is not in the GPU catalog.", style=colors["ink-3"])
         else:
-            text.append(f"${total:.3f}", style=f"bold {colors['fg']}")
-            text.append(" / hr", style=colors["muted"])
+            text.append(usd(total), style=f"bold {colors['ink']}")
+            text.append("/hr", style=colors["ink-2"])
             text.append(
-                f"\n${offer.hourly:.3f} compute  +  ${total - offer.hourly:.3f} storage for {disk} GB",
-                style=colors["faint"],
+                f"\n{usd(offer.hourly)} compute   +   {usd(total - offer.hourly)} storage for {gb(disk)}",
+                style=colors["ink-3"],
             )
-            text.append(
-                f"\n${total * 24:.2f} per day   ${total * 24 * 30:,.0f} per month", style=colors["faint"]
-            )
+            text.append(f"\n{per_day(total * 24)}   {per_month(total * 24 * 30)}", style=colors["ink-3"])
         self.query_one("#quote", Static).update(text)
 
     @on(Button.Pressed)
@@ -249,9 +188,8 @@ class Checkout(Dialog):
             if self.offer.disk_max is not None and disk > self.offer.disk_max:
                 raise CrigError(f"This offer has at most {self.offer.disk_max:g} GB disk.")
         except CrigError as error:
-            self.query_one("#checkout-error", Static).update(
-                Text(str(error), style=palette(self.app)["error"])
-            )
+            self.error = str(error)
+            self.paint()
             return
         self.dismiss(rental)
 
@@ -269,14 +207,16 @@ class Choice(Static, can_focus=True):
         colors = palette(self.app)
         focused = self.has_focus
         text = Text(no_wrap=True, overflow="ellipsis")
-        text.append("› " if focused else "  ", style=colors["primary"])
-        color = colors["error"] if self.has_class("-danger") else colors["fg"] if focused else colors["muted"]
+        text.append("› " if focused else "  ", style=colors["accent"])
+        color = (
+            colors["error"] if self.has_class("-danger") else colors["ink"] if focused else colors["ink-2"]
+        )
         text.append(self.label, style=f"bold {color}" if focused else color)
         right = Text()
         if self.tag:
-            right.append(self.tag, style=colors["faint"])
+            right.append(self.tag, style=colors["ink-3"])
             right.append("   ")
-        right.append(f"{self.key or ' '} ", style=colors["muted"] if focused else colors["faint"])
+        right.append(f"{self.key or ' '} ", style=colors["ink-2"] if focused else colors["ink-3"])
         text.append(" " * max(self.size.width - text.cell_len - right.cell_len, 1))
         text.append_text(right)
         return text
@@ -328,18 +268,30 @@ class Actions(Dialog):
                 yield Label(title, classes="group-label")
                 for label, value, tag in options:
                     yield Choice(label, value, keys.get(value, ""), tag, danger=value == "destroy")
+            yield Static(
+                "Stopping may keep storage charges. Deleting removes the instance's files.",
+                classes="dialog-note",
+            )
 
     def on_mount(self):
+        self.paint()
+        self.query(Choice).first().focus()
+
+    def paint(self):
         colors = palette(self.app)
         row = self.instance
         mark, color = status_style(row.status, colors)
         self.query_one("#checkout-title", Static).update(
             Text.assemble(
                 (f"{mark} {row.status}", color),
-                (f"   {row.gpu} ×{row.count}   {row.region}   ${row.hourly:.3f}/hr", colors["faint"]),
+                (
+                    f"   {gpu_label(row.gpu, row.count)}   {row.region}   {per_hour(row.hourly)}",
+                    colors["ink-3"],
+                ),
             )
         )
-        self.query(Choice).first().focus()
+        for choice in self.query(Choice):
+            choice.refresh()
 
     def on_key(self, event):
         value = self.HOTKEYS.get(event.character or "")
@@ -353,7 +305,7 @@ class Help(Dialog):
     KEYS = (
         ("↑ ↓  j k", "move"),
         ("enter", "rent a GPU, or open instance actions"),
-        ("1  2", "GPU offers, Instances"),
+        ("1  2", "GPU offers, instances"),
         ("/", "filter"),
         ("s", "sort"),
         ("r", "refresh"),
@@ -372,16 +324,19 @@ class Help(Dialog):
             yield Static(id="help-body")
 
     def on_mount(self):
+        self.paint()
+
+    def paint(self):
         colors = palette(self.app)
         text = Text()
         for title, keys in (("", self.KEYS), ("in instance actions", self.ACTIONS)):
             if title:
-                text.append(f"\n{title}\n", style=colors["faint"])
+                text.append(f"\n{title}\n", style=colors["ink-3"])
             for key, label in keys:
-                text.append(f"{key:<11}", style=colors["fg"])
-                text.append(f"{label}\n", style=colors["muted"])
+                text.append(f"{key:<11}", style=colors["ink"])
+                text.append(f"{label}\n", style=colors["ink-2"])
         text.append(
-            "\nDelete has no shortcut. Renting, stopping, and deleting ask for sudo.", style=colors["faint"]
+            "\nDelete has no shortcut. Renting, stopping, and deleting ask for sudo.", style=colors["ink-3"]
         )
         self.query_one("#help-body", Static).update(text)
 
@@ -399,23 +354,23 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
     TITLE = "cloudrig"
     SUB_TITLE = "GPU offers"
     CSS = """
-    Screen { background: $background; color: $foreground; }
+    Screen { background: $background; color: $ink; }
     #shell { padding: 1 4 0 4; }
 
     #header { height: 1; }
     #brand { width: auto; padding-right: 5; text-style: bold; }
-    .tab { width: auto; padding-right: 3; color: $foreground 35%; }
-    .tab:hover { color: $foreground 70%; }
-    .tab.-active { color: $foreground; }
+    .tab { width: auto; padding-right: 3; color: $ink-3; }
+    .tab:hover { color: $ink-2; }
+    .tab.-active { color: $ink; }
     #header-space { width: 1fr; }
     #provider { width: auto; }
 
     #searchbar { height: 1; margin: 2 0 1 0; }
-    #search-label { width: 2; color: $foreground 30%; }
+    #search-label { width: 2; color: $ink-3; }
     #searchbar:focus-within #search-label { color: $primary; }
     #search { width: 1fr; height: 1; border: none; padding: 0; background: $background; }
     #search:focus { background: $background; }
-    #search > .input--placeholder { color: $foreground 30%; }
+    #search > .input--placeholder { color: $ink-3; }
     #meta { width: auto; height: 1; padding-left: 2; }
 
     #action-feedback { height: auto; max-height: 6; margin-top: 1; }
@@ -430,68 +385,68 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
     #offers:focus { background-tint: 0%; }
     #offers:focus > .datatable--header { background-tint: 0%; }
     Screen.-narrow #offers { overflow-x: auto; }
-    #offers > .datatable--header { background: $background; color: $foreground 35%; }
-    #offers > .datatable--cursor { background: $foreground 7%; text-style: bold; }
-    #offers:blur > .datatable--cursor { background: $foreground 4%; text-style: none; }
-    #offers > .datatable--hover { background: $foreground 3%; }
+    #offers > .datatable--header { background: $background; color: $ink-3; }
+    #offers > .datatable--cursor { background: $tint-2; text-style: bold; }
+    #offers:blur > .datatable--cursor { background: $tint-1; text-style: none; }
+    #offers > .datatable--hover { background: $tint-1; }
     #offers > .datatable--header-hover { background: $background; }
     #inspector { width: 42; height: 1fr; margin-left: 3; padding: 0 0 0 3;
-        border-left: solid $foreground 8%; }
+        border-left: solid $ink-4; }
     Screen.-narrow #body { layout: vertical; }
     Screen.-narrow #inspector { width: 1fr; height: 4; margin: 1 0 0 0; padding: 1 0 0 0;
-        border-left: none; border-top: solid $foreground 8%; }
+        border-left: none; border-top: solid $ink-4; }
 
-    #statusbar { dock: bottom; height: 2; padding: 0 4 1 4; }
+    #statusbar { dock: bottom; height: 3; padding: 1 4 1 4; }
     #status-left { width: 1fr; }
     #status-right { width: auto; }
 
-    Dialog { align: center middle; background: $background 80%; }
+    Dialog { align: center middle; background: $scrim; }
     .dialog { width: 76; height: auto; max-height: 95%; background: $surface; padding: 1 3;
-        border: round $foreground 10%; overflow-y: auto; scrollbar-size-vertical: 1; }
-    #instance-actions { width: 60; }
+        border: round $ink-4; overflow-y: auto; scrollbar-size-vertical: 1; }
+    #instance-actions { width: 56; }
     #help { width: 56; }
     #help-body { height: auto; margin-top: 1; }
     .dialog-header { height: 1; }
     .dialog-title { width: 1fr; text-style: bold; }
-    .esc { width: auto; color: $foreground 35%; }
-    .esc:hover { color: $foreground; }
+    .esc { width: auto; color: $ink-3; }
+    .esc:hover { color: $ink; }
     .dialog-subtitle { height: auto; margin-bottom: 1; }
+    .dialog-note { height: auto; margin-top: 1; color: $ink-3; }
     .form-row { height: 1; margin-top: 1; }
-    .form-label { width: 8; color: $foreground 40%; }
-    .form-row:focus-within .form-label { color: $foreground; }
-    .form-unit { width: auto; padding-left: 1; color: $foreground 40%; }
-    .dialog Input { width: 1fr; height: 1; border: none; padding: 0 1; background: $foreground 4%; }
-    .dialog Input:focus { background: $foreground 8%; }
+    .form-label { width: 8; color: $ink-3; }
+    .form-row:focus-within .form-label { color: $ink; }
+    .form-unit { width: auto; padding-left: 1; color: $ink-3; }
+    .dialog Input { width: 1fr; height: 1; border: none; padding: 0 1; background: $tint-1; }
+    .dialog Input:focus { background: $tint-2; }
     .dialog #rental-disk { width: 12; }
     #quote { height: auto; margin-top: 2; }
-    #checkout-note { height: auto; margin-top: 1; }
     #checkout-error { height: auto; margin-top: 1; }
     .dialog-actions { height: 1; margin-top: 1; }
-    #next-step { width: 1fr; height: 1; }
+    #next-step { width: 1fr; height: 1; color: $ink-3; }
     Button { height: 1; min-width: 8; border: none; padding: 0 2; margin-left: 1;
-        background: $surface; color: $foreground 55%; text-style: none; }
-    Button:hover { color: $foreground; background: $foreground 5%; border: none; }
-    Button:focus { color: $foreground; background: $foreground 8%; text-style: none; }
+        background: $surface; color: $ink-2; text-style: none; }
+    Button:hover { color: $ink; background: $tint-1; border: none; }
+    Button:focus { color: $ink; background: $tint-2; text-style: none; }
     Button.-primary { background: $foreground; color: $background; text-style: bold; border: none; }
-    Button.-primary:hover { background: $foreground 85%; color: $background; border: none; }
+    Button.-primary:hover { background: $primary; color: $background; border: none; }
     Button.-primary:focus { background: $primary; color: $background; text-style: bold; }
-    .group-label { margin-top: 1; color: $foreground 30%; }
+    .group-label { margin-top: 1; color: $ink-3; }
     .choice { height: 1; }
-    .choice:focus { background: $foreground 6%; }
+    .choice:focus { background: $tint-2; }
 
-    CommandPalette { background: $background 80%; }
+    CommandPalette { background: $scrim; }
     CommandPalette > Vertical { width: 70; max-width: 92%; margin-top: 4; background: $surface;
-        border: round $foreground 10%; }
+        border: round $ink-4; }
     CommandPalette #--input { border: none; height: 3; padding: 0 1; }
     CommandPalette SearchIcon { display: none; }
     CommandPalette CommandInput, CommandPalette CommandInput:focus { padding-left: 1; }
     CommandPalette CommandList, CommandPalette CommandList:focus { border: none; max-height: 60vh;
         padding: 0 0 1 0; background: $surface; }
     CommandPalette CommandList > .option-list--option { padding: 0 2; text-style: none; }
-    CommandPalette CommandList > .option-list--option-highlighted { background: $foreground 7%;
-        color: $foreground; text-style: none; }
+    CommandPalette CommandList > .option-list--option-highlighted { background: $tint-2;
+        color: $ink; text-style: none; }
     CommandPalette > .command-palette--highlight { color: $primary; text-style: none; }
-    CommandPalette > .command-palette--help-text { color: $foreground 40%; }
+    CommandPalette > .command-palette--help-text { color: $ink-3; }
     Toast { background: $panel; border: none; padding: 1 2; }
     """
     BINDINGS = [
@@ -604,10 +559,19 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         mark, color = status_style(row.status, colors)
         return Text(f"{mark} {row.status}", style=color)
 
+    def get_css_variables(self) -> dict[str, str]:
+        variables = super().get_css_variables()
+        variables.update(css_variables(self.current_theme, variables))
+        self.theme_variables = variables
+        return variables
+
     def theme_changed(self, theme: Theme):
         self.paint_chrome()
         self.setup_table()
         self.populate()
+        for screen in self.screen_stack:
+            if isinstance(screen, Dialog):
+                screen.paint()
         if self.demo:
             return
         try:
@@ -631,8 +595,9 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         compact = self.size.height < 30
         side = 2 if self.narrow else 4
         self.query_one("#shell").styles.padding = (0 if compact else 1, side, 0, side)
-        self.query_one("#statusbar").styles.height = 1 if compact else 2
-        self.query_one("#statusbar").styles.padding = (0, side, 0 if compact else 1, side)
+        # The status bar always keeps one blank row above its hints.
+        self.query_one("#statusbar").styles.height = 2 if compact else 3
+        self.query_one("#statusbar").styles.padding = (1, side, 0 if compact else 1, side)
         self.query_one("#searchbar").styles.margin = (1, 0, 0, 0) if compact else (2, 0, 1, 0)
         self.paint_status()
         self.update_inspector()
@@ -643,9 +608,9 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
 
     def paint_chrome(self):
         colors = palette(self)
-        provider = Text(self.provider.name, style=colors["muted"])
+        provider = Text(provider_label(self.provider.name), style=colors["ink-2"])
         if self.demo:
-            provider.append("   demo", style=colors["primary"])
+            provider.append("   demo", style=colors["accent"])
         self.query_one("#provider", Static).update(provider)
         for tab in self.query(Tab):
             tab.set_class((tab.view == "instances") == self.rented, "-active")
@@ -666,10 +631,10 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         else:
             pairs = [
                 ("↑↓", "move"),
-                ("enter", "Rent GPU"),
+                ("enter", "rent GPU"),
                 ("/", "filter"),
                 ("s", "sort"),
-                ("2", "Instances"),
+                ("2", "instances"),
             ]
         if self.size.width < 100:
             pairs = pairs[1:3]
@@ -708,7 +673,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
                 ("offer", False),
             ]
         sorted_label, arrow = (None, "") if self.rented else SORT_COLUMNS[self.sort_mode]
-        primary = palette(self)["primary"]
+        primary = palette(self)["accent"]
         for label, wide in columns:
             if wide or self.narrow:
                 header = Text.assemble(label, (f" {arrow}", primary)) if label == sorted_label else label
@@ -721,7 +686,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.loading = True
         self.load_error = None
         self.spin = 0
-        timer = self.set_interval(0.25, self.tick)
+        timer = self.set_interval(SPINNER_INTERVAL, self.tick)
         self.tick()
         try:
             if self.rented:
@@ -769,7 +734,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         now = self.price_of(row)
         if before is None or math.isclose(before, now, abs_tol=0.0005):
             return Text("")
-        return Text(" ↑", style=colors["error"]) if now > before else Text(" ↓", style=colors["success"])
+        return Text(" ↑" if now > before else " ↓", style=colors["ink-3"])
 
     def populate(self):
         if not self.query("#offers") or self.loading:
@@ -794,30 +759,28 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             if isinstance(row, Offer):
                 best = self.price_of(row) == low
                 cells = {
-                    "gpu": Text(row.title, style=colors["fg"]),
-                    "vram": Text(f"{row.vram:g} GB", style=colors["muted"]),
+                    "gpu": Text(gpu_label(row.gpu, row.count), style=colors["ink"]),
+                    "vram": Text(gb(row.vram), style=colors["ink-2"]),
                     "price/hr": Text.assemble(
-                        (rate(row, self.disk), colors["primary"] if best else colors["fg"]),
+                        (rate(row, self.disk), colors["accent"] if best else colors["ink"]),
                         self.change(row, colors),
                     ),
-                    "region": Text(row.region, style=colors["muted"]),
+                    "region": Text(row.region, style=colors["ink-2"]),
                     "reliability": Text(
-                        "Unknown" if row.reliability is None else f"{row.reliability:.1%}",
-                        style=colors["muted"],
+                        "Unknown" if row.reliability is None else pct(row.reliability),
+                        style=colors["ink-2"],
                     ),
-                    "offer": Text(row.id, style=colors["faint"]),
+                    "offer": Text(row.id, style=colors["ink-3"]),
                 }
             else:
                 running = row.status == "running"
                 cells = {
-                    "name": Text(row.name, style=colors["fg"] if running else colors["muted"]),
+                    "name": Text(row.name, style=colors["ink"] if running else colors["ink-2"]),
                     "status": self.instance_status(row, colors),
-                    "gpu": Text(f"{row.gpu} ×{row.count}", style=colors["muted"]),
-                    "price/hr": Text(
-                        f"${row.hourly:.3f}", style=colors["fg"] if running else colors["faint"]
-                    ),
-                    "region": Text(row.region, style=colors["muted"]),
-                    "id": Text(row.id, style=colors["faint"]),
+                    "gpu": Text(gpu_label(row.gpu, row.count), style=colors["ink-2"]),
+                    "price/hr": Text(usd(row.hourly), style=colors["ink"] if running else colors["ink-3"]),
+                    "region": Text(row.region, style=colors["ink-2"]),
+                    "id": Text(row.id, style=colors["ink-3"]),
                 }
             table.add_row(*[cells[str(key.value)] for key in table.columns], key=row.id)
         if selected:
@@ -837,18 +800,18 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         colors = palette(self)
         text = Text(no_wrap=True)
         if self.loading:
-            text.append("loading", style=colors["faint"])
+            text.append("loading", style=colors["ink-3"])
         elif self.rented:
             running = [row for row in self.visible_rows if row.status == "running"]
-            text.append(f"{len(running)} running", style=colors["muted"])
-            text.append(f"   ${sum(row.hourly for row in running):.3f}/hr", style=colors["fg"])
+            text.append(f"{len(running)} running", style=colors["ink-2"])
+            text.append(f"   {per_hour(sum(row.hourly for row in running))}", style=colors["ink"])
         else:
             count = len(self.visible_rows)
-            text.append(f"{count} offer{'s' * (count != 1)}", style=colors["muted"])
+            text.append(f"{count} offer{'s' * (count != 1)}", style=colors["ink-2"])
             if self.visible_rows:
-                text.append("   from ", style=colors["faint"])
+                text.append("   from ", style=colors["ink-3"])
                 text.append(
-                    f"${min(self.price_of(row) for row in self.visible_rows):.3f}/hr", style=colors["fg"]
+                    per_hour(min(self.price_of(row) for row in self.visible_rows)), style=colors["ink"]
                 )
         self.query_one("#meta", Static).update(text)
 
@@ -885,15 +848,15 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             return
         colors = palette(self)
         text = Text(justify="center")
-        text.append("cloudrig\n", style=f"bold {colors['fg']}")
-        text.append("GPUs on demand\n\n\n", style=colors["faint"])
+        text.append("cloudrig\n", style=f"bold {colors['ink']}")
+        text.append("GPUs on demand\n\n\n", style=colors["ink-3"])
         if self.loading:
-            text.append(f"{PULSE[self.spin % len(PULSE)]}\n\n", style=colors["primary"])
+            text.append(f"{SPINNER[self.spin % len(SPINNER)]}\n\n", style=colors["accent"])
             subject = "instances" if self.rented else "offers"
-            text.append(f"Loading {subject} from {self.provider.name}", style=colors["muted"])
+            text.append(f"Loading {subject} from {self.provider.name}", style=colors["ink-2"])
         elif self.load_error:
             text.append("Could not load data\n\n", style=colors["error"])
-            text.append(self.load_error + "\n\n", style=colors["fg"])
+            text.append(self.load_error + "\n\n", style=colors["ink"])
             if self.rows:
                 text.append("Previously loaded prices may be outdated.\n\n", style=colors["warning"])
             hints(text, [("r", "retry"), ("q", "quit")], colors)
@@ -905,17 +868,17 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
                 message = "No instances yet"
             else:
                 message = f"No offers for {self.gpu_query or 'all GPUs'!r}"
-            text.append(f"{message}\n\n", style=colors["fg"])
-            text.append("Press ", style=colors["muted"])
-            text.append("1" if self.rented else "2", style=colors["fg"])
+            text.append(f"{message}\n\n", style=colors["ink"])
+            text.append("Press ", style=colors["ink-2"])
+            text.append("1" if self.rented else "2", style=colors["ink"])
             text.append(
                 " to browse GPUs.\n\n" if self.rented else " to view instances.\n\n",
-                style=colors["muted"],
+                style=colors["ink-2"],
             )
             pairs = [("esc", "clear")] if needle else []
             pairs += [("r", "refresh")]
             hints(text, pairs, colors)
-        text.append(f"\n\n\nv{__version__}", style=colors["faint"])
+        text.append(f"\n\n\nv{__version__}", style=colors["ink-3"])
         splash.update(text)
 
     # Inspector
@@ -938,43 +901,44 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
     def summary(self, row, colors) -> Text:
         text = Text(no_wrap=True, overflow="ellipsis")
         if isinstance(row, Offer):
-            text.append(f"{row.title}   ", style=colors["fg"])
-            text.append(rate(row, self.disk), style=f"bold {colors['fg']}")
-            text.append(f" /hr   ${hourly(row, self.disk) * 24:.2f} /day", style=colors["faint"])
-            text.append(f"\n{row.count} × {row.vram:g} GB   {row.region}", style=colors["muted"])
+            text.append(f"{gpu_label(row.gpu, row.count)}   ", style=colors["ink"])
+            text.append(rate(row, self.disk), style=f"bold {colors['ink']}")
+            text.append("/hr", style=colors["ink-2"])
+            text.append(f"   {per_day(hourly(row, self.disk) * 24)}", style=colors["ink-3"])
+            text.append(f"\n{gb(row.vram * row.count)} vram   {row.region}", style=colors["ink-2"])
             if row.reliability is not None:
-                text.append(f"   {row.reliability:.1%} reliable", style=colors["muted"])
+                text.append(f"   {pct(row.reliability)} reliable", style=colors["ink-2"])
         else:
             mark, color = status_style(row.status, colors)
-            text.append(f"{row.name}   ", style=colors["fg"])
+            text.append(f"{row.name}   ", style=colors["ink"])
             text.append(f"{mark} {row.status}", style=color)
-            text.append(f"   ${row.hourly:.3f} /hr", style=colors["faint"])
-            text.append(f"\n{row.gpu} ×{row.count}   {row.region}", style=colors["muted"])
+            text.append(f"   {per_hour(row.hourly)}", style=colors["ink-3"])
+            text.append(f"\n{gpu_label(row.gpu, row.count)}   {row.region}", style=colors["ink-2"])
         return text
 
     def offer_card(self, row: Offer, colors) -> Text:
         price = hourly(row, self.disk)
         text = Text()
-        text.append(f"{row.title}\n", style=f"bold {colors['fg']}")
-        text.append(f"{row.region}   {row.provider}", style=colors["faint"])
+        text.append(f"{gpu_label(row.gpu, row.count)}\n", style=f"bold {colors['ink']}")
+        text.append(f"{row.region}   {provider_label(row.provider)}", style=colors["ink-3"])
         text.append("\n\n\n")
-        text.append(rate(row, self.disk), style=f"bold {colors['fg']}")
-        text.append(" / hr", style=colors["muted"])
+        text.append(rate(row, self.disk), style=f"bold {colors['ink']}")
+        text.append("/hr", style=colors["ink-2"])
         text.append_text(self.change(row, colors))
-        text.append(f"\n${price * 24:.2f} per day   ${price * 24 * 30:,.0f} per month", style=colors["faint"])
+        text.append(f"\n{per_day(price * 24)}   {per_month(price * 24 * 30)}", style=colors["ink-3"])
         if row.total(self.disk) is None:
             text.append("\nStorage is billed separately.", style=colors["warning"])
         else:
-            text.append(f"\nincludes {self.disk} GB disk", style=colors["faint"])
+            text.append(f"\nincludes {gb(self.disk)} disk", style=colors["ink-3"])
 
         text.append("\n\n")
-        field(text, "gpus", f"{row.count} × {row.gpu}", colors)
-        field(text, "vram", f"{row.vram * row.count:g} GB", colors)
-        field(text, "per GB vram", f"${price / (row.vram * row.count):.4f} /hr", colors)
+        field(text, "gpus", str(row.count), colors)
+        field(text, "vram", gb(row.vram * row.count), colors)
+        field(text, "per GB vram", per_hour(price / (row.vram * row.count), digits=4), colors)
         if row.reliability is not None:
-            field(text, "reliability", f"{row.reliability:.1%}", colors)
+            field(text, "reliability", pct(row.reliability), colors)
         if row.disk_max is not None:
-            field(text, "max disk", f"{row.disk_max:g} GB", colors)
+            field(text, "max disk", gb(row.disk_max), colors)
         if row.availability != "available":
             field(text, "stock", Text(row.availability, style=colors["warning"]), colors)
         field(text, "offer", row.id, colors)
@@ -984,34 +948,33 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             rank = prices.index(price) + 1
             text.append("\n\n")
             if rank == 1:
-                text.append("Lowest price", style=colors["primary"])
-                text.append(f" of {len(prices)} offers", style=colors["faint"])
+                text.append("Lowest", style=colors["accent"])
+                text.append(f" of {len(prices)} offers", style=colors["ink-3"])
             else:
-                text.append(f"+${price - prices[0]:.3f}/hr", style=colors["muted"])
-                text.append(f" over the lowest of {len(prices)} offers", style=colors["faint"])
+                text.append(f"+{per_hour(price - prices[0])}", style=colors["ink-2"])
+                text.append(f" over the lowest of {len(prices)} offers", style=colors["ink-3"])
         text.append("\n\n\n")
-        hints(text, [("enter", "Rent GPU")], colors)
-        text.append("   nothing is charged yet", style=colors["faint"])
+        hints(text, [("enter", "rent GPU")], colors)
+        text.append("   no charge yet", style=colors["ink-3"])
         return text
 
     def instance_card(self, row: Instance, colors) -> Text:
         mark, color = status_style(row.status, colors)
         text = Text()
-        text.append(f"{row.name}\n", style=f"bold {colors['fg']}")
+        text.append(f"{row.name}\n", style=f"bold {colors['ink']}")
         text.append(f"{mark} {row.status}", style=color)
-        text.append(f"   {row.gpu} ×{row.count}", style=colors["faint"])
+        text.append(f"   {gpu_label(row.gpu, row.count)}", style=colors["ink-3"])
         text.append("\n\n\n")
-        text.append(f"${row.hourly:.3f}", style=f"bold {colors['fg']}")
-        text.append(" / hr", style=colors["muted"])
+        text.append(usd(row.hourly), style=f"bold {colors['ink']}")
+        text.append("/hr", style=colors["ink-2"])
         text.append(
-            f"\n${row.hourly * 24:.2f} per day   ${row.hourly * 24 * 30:,.0f} per month",
-            style=colors["faint"],
+            f"\n{per_day(row.hourly * 24)}   {per_month(row.hourly * 24 * 30)}", style=colors["ink-3"]
         )
 
         text.append("\n\n")
         field(text, "region", row.region, colors)
         field(text, "address", f"{row.host}:{row.port}" if row.host else "not assigned", colors)
-        field(text, "provider", row.provider, colors)
+        field(text, "provider", provider_label(row.provider), colors)
         field(text, "id", row.id, colors)
         text.append("\n\n\n")
         hints(text, [("enter", "actions")], colors)

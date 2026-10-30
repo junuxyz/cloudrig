@@ -64,7 +64,7 @@ def ensure_service(provider: str, source: Path | None = None) -> None:
     updating = HELPER.exists()
     console.print(
         "\nUpdate API key protection" if updating else "\nProtect your API keys from AI agents",
-        style="bold",
+        style="crig.title",
     )
     console.print()
     console.print(

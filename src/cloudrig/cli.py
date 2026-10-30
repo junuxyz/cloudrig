@@ -13,8 +13,9 @@ from cloudrig.connections import connect_editor
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError, InstanceAction, Rental
 from cloudrig.security import safe_diagnostic
+from cloudrig.style import gb, gpu_label, named, provider_label, usd
 from cloudrig.terminal import console, prompt_confirm, waiting
-from cloudrig.tui import CloudrigApp, sorted_offers
+from cloudrig.tui import CloudrigApp, rate, sorted_offers
 
 
 def parser() -> argparse.ArgumentParser:
@@ -50,28 +51,31 @@ def login(provider: str):
     url = API_KEY_URLS[provider]
     console.print("\nNo API key yet? Create one here:")
     console.print(Text(url, style=f"underline link {url}"))
-    console.print("Copy your key, then paste it into the hidden API key prompt.")
+    console.print("Copy your key, then paste it into the hidden API key prompt.", style="crig.muted")
     admin("login", provider)
-    console.print(f"Connected to {provider}.")
+    console.print(f"Connected to {provider_label(provider)}.", style="crig.ok")
 
 
 def print_rows(rows, args):
     if args.json:
         print(json.dumps([row.to_dict() for row in rows], indent=2))
         return
-    table = Table(box=None, header_style="dim", highlight=False)
+    table = Table(box=None, header_style="crig.muted", highlight=False)
+    # Same columns as the dashboard table.
     if args.rented:
-        for name in ("Name", "GPU", "Status", "USD / hr", "Region", "ID"):
+        for name in ("name", "status", "gpu", "price/hr", "region", "id"):
             table.add_column(name)
         for row in rows:
-            table.add_row(row.name, row.gpu, row.status, f"${row.hourly:.3f}", row.region, row.id)
+            table.add_row(
+                row.name, row.status, gpu_label(row.gpu, row.count), usd(row.hourly), row.region, row.id
+            )
     else:
-        for name in ("GPU", "VRAM", "USD / hr", "Region", "Offer"):
+        for name in ("gpu", "vram", "price/hr", "region", "offer"):
             table.add_column(name)
         for row in sorted_offers(rows, args.sort, args.disk):
-            total = row.total(args.disk)
-            price = f"${total:.3f}" if total is not None else f"${row.hourly:.3f}+"
-            table.add_row(row.title, f"{row.vram:g} GB", price, row.region, row.id)
+            table.add_row(
+                gpu_label(row.gpu, row.count), gb(row.vram), rate(row, args.disk), row.region, row.id
+            )
     console.print(table)
 
 
@@ -88,7 +92,7 @@ def rent(api, rental: Rental, args):
         return
     identifier = api.rent(rental)
     state.remember_instance(api.name, identifier)
-    console.print(Text(f"Rented {rental.name} · {identifier}", style="green"))
+    console.print(Text(f"Rented {named(rental.name, identifier)}.", style="crig.ok"))
     return identifier
 
 
@@ -105,9 +109,12 @@ def action(api, item, name: str, args):
             connect_editor(api, item.id, progress=progress)
         return
     if name == "destroy":
-        prompt_confirm(f"Delete {item.name} and its instance-local files?")
+        prompt_confirm(f"Delete {named(item.name, item.id)} and its instance-local files?")
     getattr(api, name)(item.id)
-    console.print(f"{'Stop' if name == 'stop' else 'Delete'} request accepted for {item.name}.")
+    console.print(
+        f"{'Stop' if name == 'stop' else 'Delete'} request accepted for {named(item.name, item.id)}.",
+        style="crig.ok",
+    )
 
 
 def dashboard(api, args):
@@ -143,7 +150,8 @@ def doctor():
     provider = state.load().get("provider") or "vastai"
     check_service(provider)
     console.print(
-        "Protected service is ready. Editor connections need VS Code with Remote - SSH and OpenSSH 8.9+."
+        "Protected service is ready. Editor connections need VS Code with Remote - SSH and OpenSSH 8.9+.",
+        style="crig.ok",
     )
 
 
@@ -193,7 +201,7 @@ def main():
             return
         if argv == ["self-test"]:
             admin("self-test")
-            console.print("Protected service checks passed.")
+            console.print("Protected service checks passed.", style="crig.ok")
             return
         if not argv and sys.stdin.isatty():
             if not state.load().get("provider"):
@@ -207,18 +215,21 @@ def main():
                 ensure_service(state.load()["provider"])
         dispatch(parser().parse_intermixed_args(argv))
     except CrigError as error:
-        console.print(Text(f"crig: {error}", style="#edb19e"))
+        console.print(Text(f"crig: {error}", style="crig.error"))
         raise SystemExit(1) from None
     except (KeyboardInterrupt, EOFError):
         console.print("\nCancelled. Check crig --rented if a rental was submitted.")
         raise SystemExit(130) from None
     except OSError as error:
-        console.print(Text(f"crig: {error.strerror or 'Local operation failed'}", style="#edb19e"))
+        console.print(Text(f"crig: {error.strerror or 'Local operation failed'}", style="crig.error"))
         raise SystemExit(1) from None
 
     except Exception as error:
-        console.print("Unexpected failure. No automatic retry was made. Check crig --rented before retrying.")
-        console.print(f"Diagnostic: {json.dumps(safe_diagnostic(error))}", markup=False)
+        console.print(
+            "Unexpected failure. No automatic retry was made. Check crig --rented before retrying.",
+            style="crig.error",
+        )
+        console.print(f"Diagnostic: {json.dumps(safe_diagnostic(error))}", markup=False, style="crig.muted")
         raise SystemExit(1) from None
 
 

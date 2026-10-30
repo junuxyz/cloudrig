@@ -9,8 +9,9 @@ from rich.prompt import Confirm
 from rich.text import Text
 
 from cloudrig.models import CrigError
+from cloudrig.style import CLI_THEME
 
-console = Console(highlight=False)
+console = Console(highlight=False, theme=CLI_THEME)
 
 
 @contextmanager
