@@ -4,13 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cloudrig"
-version = "0.3.0"
-description = "Rent cloud GPUs, open VS Code, stop, and delete."
+version = "0.4.0"
+description = "Rent Vast.ai GPUs, open VS Code, stop, and delete."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["rich>=14,<15", "textual>=6,<7", "filelock>=4.2.1,<5"]
+dependencies = [
+    "cryptography>=43,<47",
+    "filelock>=4.2.1,<5",
+    "rich>=14,<15",
+    "textual>=6,<7",
+]
 
 [project.scripts]
 crig = "cloudrig.cli:main"
@@ -20,9 +25,6 @@ dev = ["pytest>=9.0.3,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.11,<1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cloudrig"]
-
-[tool.hatch.build.hooks.custom]
-path = "hatch_build.py"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

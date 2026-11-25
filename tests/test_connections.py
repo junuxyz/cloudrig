@@ -1,99 +1,77 @@
-import os
-import socket
-import subprocess
-import tempfile
-from dataclasses import replace
+"""Test per-instance SSH keypair management, config blocks, and cleanup."""
+
 from pathlib import Path
 
 import pytest
 
-from cloudrig import broker
-from cloudrig.connections import connect_editor, install_alias, open_code
-from cloudrig.demo import Demo
-from cloudrig.models import CrigError
+from cloudrig import connections
+from cloudrig.models import CrigError, Instance
 
 
-@pytest.fixture
-def grant(isolated_home, monkeypatch):
-    temporary = tempfile.TemporaryDirectory(prefix="cg-grant-", dir="/tmp")
-    public_root = Path(temporary.name)
-    public = public_root / "identity.pub"
-    public.write_text("ssh-ed25519 AAAATEST public-only")
-    known = public_root / "known_hosts"
-    known.write_text("vastai-demo-01 ssh-ed25519 AAAATEST")
-    endpoint = public_root / "agent.sock"
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(str(endpoint))
-    monkeypatch.setattr(broker, "PUBLIC_ROOT", public_root)
-    monkeypatch.setattr(broker, "ROOT_UID", os.getuid())
-    monkeypatch.setattr(broker, "trusted_root_path", lambda _: None)
-    item = replace(
-        Demo().instances()[0],
-        approved=True,
-        public_key=str(public),
-        known_hosts=str(known),
-        agent_socket=str(endpoint),
-    )
-    yield item
-    listener.close()
-    temporary.cleanup()
+def test_keypair_alias_and_cleanup_lifecycle():
+    private, pub = connections.ensure_keypair("9001")
+    assert private.is_file()
+    assert pub.startswith("ssh-ed25519 ")
+
+    name = connections.install_alias("9001", "203.0.113.10", 22022)
+    assert name == "crig-9001"
+
+    managed_config = (Path.home() / ".ssh" / "cloudrig" / "config").read_text()
+    assert "Host crig-9001" in managed_config
+    assert "HostName 203.0.113.10" in managed_config
+    assert "ForwardAgent no" in managed_config
+    assert "IdentitiesOnly yes" in managed_config
+
+    main_config = (Path.home() / ".ssh" / "config").read_text()
+    assert f'Include "{Path.home() / ".ssh" / "cloudrig" / "config"}"' in main_config
+
+    connections.cleanup_instance("9001")
+    assert not connections.has_keypair("9001")
+    assert "Host crig-9001" not in (Path.home() / ".ssh" / "cloudrig" / "config").read_text()
 
 
-def test_generated_config_uses_public_key_and_restricted_signer(grant, isolated_home):
-    ssh = isolated_home / ".ssh"
-    ssh.mkdir(mode=0o700)
-    original = "Host personal\n  HostName example.org\n  ForwardAgent yes\n"
-    (ssh / "config").write_text(original)
-    name = install_alias(grant)
-    install_alias(replace(grant, host="203.0.113.90", port=3333))
-    contents = (ssh / "cloudrig" / "config").read_text()
-    assert contents.count(f"Host {name}\n") == 1
-    assert "identity.pub" in contents and "IdentityAgent" in contents
-    assert "StrictHostKeyChecking yes" in contents
-    assert "ForwardAgent no" in contents
-    assert original in (ssh / "config").read_text()
-    result = subprocess.run(
-        ["ssh", "-G", "-F", str(ssh / "cloudrig" / "config"), name],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "hostname 203.0.113.90" in result.stdout
-    assert "forwardagent no" in result.stdout
-    assert ".pub" in next(line for line in result.stdout.splitlines() if line.startswith("identityfile "))
+def test_connect_editor_falls_back_to_proxy_and_attaches_key(monkeypatch):
+    attached = []
+    opened = []
+    tried = []
+
+    class FakeAPI:
+        def instance(self, ident):
+            return Instance(
+                id=ident,
+                provider="vastai",
+                name="train",
+                gpu="RTX 4090",
+                count=1,
+                status="running",
+                hourly=0.3,
+                region="US",
+                host="203.0.113.5",
+                port=22022,
+                direct=True,
+                proxy_host="ssh5.vast.ai",
+                proxy_port=12345,
+            )
+
+        def attach_ssh_key(self, ident, pub):
+            attached.append((ident, pub))
+
+    monkeypatch.setattr(connections, "require", lambda binary: f"/usr/bin/{binary}")
+    monkeypatch.setattr(connections, "ensure_keypair", lambda ident: (Path("/tmp/k"), "ssh-ed25519 AAA"))
+
+    def fake_ready(ident, host, port, user, timeout):
+        tried.append((host, port))
+        return host == "ssh5.vast.ai"
+
+    monkeypatch.setattr(connections, "ssh_ready", fake_ready)
+    monkeypatch.setattr(connections, "open_code", lambda ident: opened.append(ident))
+
+    connections.connect_editor(FakeAPI(), "777", timeout=5)
+    assert attached == [("777", "ssh-ed25519 AAA")]
+    assert tried == [("203.0.113.5", 22022), ("ssh5.vast.ai", 12345)]
+    assert opened == ["777"]
 
 
-def test_editor_uses_native_ssh_without_key_content(grant, monkeypatch):
-    calls = []
-    monkeypatch.setattr("cloudrig.connections.run", calls.append)
-    open_code(grant, "/workspace/a b;$(evil)")
-    assert calls == [["code", "--remote", "ssh-remote+crig-vastai-demo-01", "/workspace/a b;$(evil)"]]
-
-
-def test_wrong_grant_path_or_proxy_only_connection_is_rejected(grant):
-    with pytest.raises(CrigError):
-        install_alias(replace(grant, public_key="/tmp/untrusted.pub"))
-    with pytest.raises(CrigError):
-        open_code(replace(grant, direct=False), "/workspace")
-
-
-def test_editor_waits_through_rate_limit_on_the_existing_gpu(grant, monkeypatch):
-    from types import SimpleNamespace
-
-    from cloudrig.models import RateLimited
-
-    calls, sleeps, opened = [], [], []
-    monkeypatch.setattr("cloudrig.connections.require", lambda name: name)
-    monkeypatch.setattr("cloudrig.connections.time.sleep", sleeps.append)
-    monkeypatch.setattr("cloudrig.connections.open_code", lambda item, path: opened.append((item.id, path)))
-
-    def instance(identifier):
-        calls.append(identifier)
-        if len(calls) == 1:
-            raise RateLimited(30)
-        return grant
-
-    connect_editor(SimpleNamespace(instance=instance), grant.id)
-    assert calls == [grant.id, grant.id]
-    assert sleeps == [30]
-    assert opened == [(grant.id, "/workspace")]
+def test_rejects_unsafe_ssh_host():
+    with pytest.raises(CrigError, match="invalid SSH hostname"):
+        connections.install_alias("777", "bad host; rm -rf /", 22)

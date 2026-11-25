@@ -1,5 +1,8 @@
+"""Local preferences and safe file helpers."""
+
 import json
 import os
+import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -7,9 +10,36 @@ from pathlib import Path
 from filelock import FileLock
 
 from cloudrig.models import CrigError
-from cloudrig.security import private_directory, regular_file
 
-PROVIDERS = ("vastai", "runpod")
+_CHILD_ENV = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "COLORTERM",
+        "NO_COLOR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "TERM_PROGRAM",
+        "VSCODE_IPC_HOOK_CLI",
+    }
+)
+
+
+def child_environment() -> dict[str, str]:
+    return {name: value for name, value in os.environ.items() if name in _CHILD_ENV}
 
 
 def config_dir() -> Path:
@@ -17,12 +47,23 @@ def config_dir() -> Path:
     return root / "cloudrig"
 
 
-def atomic_write(path: Path, text: str) -> None:
-    private_directory(path.parent)
-    regular_file(path)
+def private_dir(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise CrigError(f"Expected a directory owned by you at {path}.")
+    if info.st_mode & 0o077:
+        os.chmod(path, 0o700)
+
+
+def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
+    private_dir(path.parent)
+    if path.is_symlink():
+        raise CrigError(f"Refusing to overwrite symlink {path}.")
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(fd, 0o600)
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "w") as stream:
             stream.write(text)
             stream.flush()
@@ -35,8 +76,7 @@ def atomic_write(path: Path, text: str) -> None:
 @contextmanager
 def state_lock():
     root = config_dir()
-    private_directory(root)
-    regular_file(root / ".lock")
+    private_dir(root)
     with FileLock(root / ".lock", timeout=10, mode=0o600):
         yield
 
@@ -45,17 +85,11 @@ def load() -> dict:
     path = config_dir() / "config.json"
     if not path.exists() and not path.is_symlink():
         return {}
-    private_directory(path.parent)
-    regular_file(path, private=True)
     try:
         data = json.loads(path.read_text())
-        if not isinstance(data, dict):
-            raise ValueError
-        return data
+        return data if isinstance(data, dict) else {}
     except (ValueError, OSError) as error:
-        raise CrigError(
-            f"Cannot read {path}. Repair or move this file, then run crig --set vastai."
-        ) from error
+        raise CrigError(f"Cannot read {path}. Fix or remove it and retry.") from error
 
 
 def update(**changes) -> dict:
@@ -66,9 +100,8 @@ def update(**changes) -> dict:
         return data
 
 
-def remember_instance(provider: str, identifier: str) -> None:
+def remember_instance(identifier: str) -> None:
     with state_lock():
         data = load()
-        active = data.setdefault("active", {})
-        active[provider] = identifier
+        data["last_instance"] = identifier
         atomic_write(config_dir() / "config.json", json.dumps(data, indent=2) + "\n")

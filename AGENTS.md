@@ -1,23 +1,16 @@
 # Working on Cloudrig
 
-For user onboarding, follow [docs/agents.md](docs/agents.md).
+Cloudrig is a minimal pure-Python CLI/TUI for renting Vast.ai GPUs, opening VS Code, stopping, and deleting them.
 
-Read [docs/architecture.md](docs/architecture.md) before changing responsibilities or saved state.
+- Keep the codebase small, direct, and pure Python (no root daemon, no `sudo`, no multi-language build).
+- Keep the security boundary simple and honest:
+  - Read-only Vast.ai key (`read.key`) for browsing and instance reads.
+  - Scoped no-billing action key (`action.key.enc`, encrypted with `scrypt` + `AES-256-GCM`) unlocked via `/dev/tty` PIN prompt only for mutations (`rent`, `stop`, `destroy`, `attach_ssh_key`).
+- Keep visual tokens and display formats centralized in `src/cloudrig/style.py` (enforced by `tests/test_design_guards.py`).
+- Run checks before finishing:
 
-- Keep CLI, editor connection, and root-helper responsibilities explicit.
-- Keep the current scope to rent, VS Code, stop, and delete. Deferred workflows belong on their preservation branch.
-- Prefer direct functions and small data types. Add abstractions when implemented callers need them.
-- Migrate callers, then delete unused paths and parameters. Do not keep wrappers for old internal APIs.
-- Validate configuration, provider responses, and privileged requests where they enter the application.
-  Trust validated immutable values inside the application instead of checking them again.
-- Keep defaults in one place. Use constants for platform paths and provider contracts, and configuration
-  for project choices. Never silently substitute another provider, instance, or price.
-- Tie each guard to a concrete failure. Keep checks for paid requests, credentials, and transfers.
-  Avoid speculative fallbacks, blanket retries, and guards for impossible internal states.
-- Preserve receipts when a paid request's outcome is unknown. A setup failure must never rent another GPU.
-- Test behavior through commands and actual tool calls where practical. A test double must not replace
-  the policy under test. Do not add tests that repeat the implementation without checking behavior.
-- Preserve unrelated working-tree edits. Use descriptive branch names without a `codex/` prefix.
-
-For changes to both executables, run `uv run pytest -q`, `uv run ruff check src tests`, and, from
-`admin/`, `go test -race ./...` and `go vet ./...`. Build commands are in [docs/verification.md](docs/verification.md).
+```sh
+uv sync --group dev
+uv run ruff check src tests scripts/preview.py
+uv run pytest -q
+```

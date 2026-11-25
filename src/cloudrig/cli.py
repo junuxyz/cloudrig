@@ -1,4 +1,4 @@
-"""Rent GPUs, list them, stop them, and delete them."""
+"""Rent Vast.ai GPUs, list them, open VS Code, stop, and delete."""
 
 import argparse
 import json
@@ -7,37 +7,34 @@ import sys
 from rich.table import Table
 from rich.text import Text
 
-from cloudrig import __version__, state
-from cloudrig.broker import API_KEY_URLS, BrokerProvider, admin, check_service
+from cloudrig import __version__, state, vast, vault
 from cloudrig.connections import connect_editor
 from cloudrig.demo import Demo
-from cloudrig.models import CrigError, InstanceAction, Rental
-from cloudrig.security import safe_diagnostic
-from cloudrig.style import gb, gpu_label, named, provider_label, usd
-from cloudrig.terminal import console, prompt_confirm, waiting
-from cloudrig.tui import CloudrigApp, rate, sorted_offers
+from cloudrig.models import Cancelled, CrigError, InstanceAction, Offer, Rental
+from cloudrig.style import gb, gpu_label, named, usd
+from cloudrig.terminal import console, waiting
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         prog="crig",
-        description="Rent a cloud GPU, open VS Code, stop, and delete.",
+        description="Rent a Vast.ai GPU, open VS Code, stop, and delete.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Start here:
+        epilog="""Commands:
   crig                  Open the dashboard
-  crig --gpu            Browse GPUs to rent
+  crig --gpu [QUERY]    Browse GPU offers
+  crig --rented         List rented GPUs
   crig NAME code        Open VS Code
-  crig NAME stop        Stop a GPU
-  crig NAME destroy     Delete a GPU
-
-Account setup: crig setup. Updates: crig update.
+  crig NAME stop        Stop a GPU (PIN required)
+  crig NAME destroy     Delete a GPU (PIN required)
+  crig login            Connect your Vast.ai account
+  crig logout           Remove saved local keys
 """,
     )
     result.add_argument("words", nargs="*", metavar="ARG")
     result.add_argument("--version", action="version", version=f"cloudrig {__version__}")
     result.add_argument("--gpu", nargs="?", const="", metavar="QUERY", help="Browse GPU offers")
     result.add_argument("--rented", action="store_true", help="List rented GPUs")
-    result.add_argument("--provider", choices=state.PROVIDERS, help="Choose the provider for this command")
     result.add_argument("--sort", choices=("price", "vram", "region", "gpus"), default="price")
     result.add_argument("--count", type=int, default=1, help="GPU count to search for")
     result.add_argument("--disk", type=int, default=40, help="Container disk in GB")
@@ -47,21 +44,68 @@ Account setup: crig setup. Updates: crig update.
     return result
 
 
-def login(provider: str):
-    url = API_KEY_URLS[provider]
-    console.print("\nNo API key yet? Create one here:")
+def login() -> None:
+    url = vast.API_KEY_URL
+    console.print("\nConnect Vast.ai\n", style="crig.title")
+    console.print("Get your API key here:")
     console.print(Text(url, style=f"underline link {url}"))
-    console.print("Copy your key, then paste it into the hidden API key prompt.", style="crig.muted")
-    admin("login", provider)
-    console.print(f"Connected to {provider_label(provider)}.", style="crig.ok")
+    console.print(
+        "Cloudrig will mint a read-only key for browsing and a no-billing action key locked with your PIN.",
+        style="crig.muted",
+    )
+    console.print("The key you paste is never saved.\n", style="crig.muted")
+
+    raw_key = vault.read_tty_secret("Vast.ai API key (hidden): ").strip()
+    if not raw_key:
+        raise Cancelled("Cancelled.")
+
+    pin = vault.read_tty_secret("Choose a PIN (4+ chars, hidden): ")
+    if len(pin) < 4:
+        raise CrigError("Use a PIN or passphrase with at least 4 characters.")
+    confirm = vault.read_tty_secret("Confirm PIN (hidden): ")
+    if pin != confirm:
+        raise CrigError("PINs did not match. Nothing was saved.")
+
+    vast.verify_key(raw_key)
+    try:
+        read_key, action_key = vast.mint_scoped_keys(raw_key)
+    except vast._AuthDenied:
+        vault.save_keys(None, raw_key, pin, scoped=False)
+        console.print(
+            "Connected to Vast.ai. Saved your key encrypted with your PIN "
+            "(it did not have permission to mint a separate read-only key).",
+            style="crig.ok",
+        )
+        return
+
+    vault.save_keys(read_key, action_key, pin, scoped=True)
+    console.print("Connected to Vast.ai with scoped read and PIN-locked action keys.", style="crig.ok")
 
 
-def print_rows(rows, args):
+def logout() -> None:
+    vault.clear_keys()
+    console.print("Removed saved local keys.", style="crig.ok")
+
+
+def _offer_hourly(offer: Offer, disk: int) -> float:
+    total = offer.total(disk)
+    return total if total is not None else offer.hourly
+
+
+def _sorted_offers(rows: list[Offer], sort: str, disk: int) -> list[Offer]:
+    def key(offer: Offer):
+        price = _offer_hourly(offer, disk)
+        order = {"price": price, "vram": -offer.vram, "region": offer.region, "gpus": -offer.count}
+        return order[sort], price, offer.id
+
+    return sorted(rows, key=key)
+
+
+def print_rows(rows, args) -> None:
     if args.json:
         print(json.dumps([row.to_dict() for row in rows], indent=2))
         return
     table = Table(box=None, header_style="crig.muted", highlight=False)
-    # Same columns as the dashboard table.
     if args.rented:
         for name in ("name", "status", "gpu", "price/hr", "region", "id"):
             table.add_column(name)
@@ -72,9 +116,11 @@ def print_rows(rows, args):
     else:
         for name in ("gpu", "vram", "price/hr", "region", "offer"):
             table.add_column(name)
-        for row in sorted_offers(rows, args.sort, args.disk):
+        for row in _sorted_offers(rows, args.sort, args.disk):
+            total = row.total(args.disk)
+            rate_text = usd(row.hourly, partial=True) if total is None else usd(total)
             table.add_row(
-                gpu_label(row.gpu, row.count), gb(row.vram), rate(row, args.disk), row.region, row.id
+                gpu_label(row.gpu, row.count), gb(row.vram), rate_text, row.region, row.id
             )
     console.print(table)
 
@@ -89,18 +135,16 @@ def resolve(api, target: str):
 def rent(api, rental: Rental, args):
     if args.demo:
         console.print("Demo only. No GPU was rented.")
-        return
+        return None
     identifier = api.rent(rental)
-    state.remember_instance(api.name, identifier)
+    state.remember_instance(identifier)
     console.print(Text(f"Rented {named(rental.name, identifier)}.", style="crig.ok"))
     return identifier
 
 
-def action(api, item, name: str, args):
+def action(api, item, name: str, args) -> None:
     if name not in {"code", "stop", "destroy"}:
-        raise CrigError(
-            "Choose code, stop, or destroy. Other workflows are deferred; see docs/milestones.md."
-        )
+        raise CrigError("Choose code, stop, or destroy. Run crig for the dashboard.")
     if args.demo:
         console.print(f"Demo: {name} {item.name}. No changes made.")
         return
@@ -108,16 +152,18 @@ def action(api, item, name: str, args):
         with waiting() as progress:
             connect_editor(api, item.id, progress=progress)
         return
-    if name == "destroy":
-        prompt_confirm(f"Delete {named(item.name, item.id)} and its instance-local files?")
-    getattr(api, name)(item.id)
+    getattr(api, name)(item)
     console.print(
         f"{'Stop' if name == 'stop' else 'Delete'} request accepted for {named(item.name, item.id)}.",
         style="crig.ok",
     )
+    if name == "stop":
+        console.print("Storage charges may continue until the GPU is deleted.", style="crig.warn")
 
 
-def dashboard(api, args):
+def dashboard(api, args) -> None:
+    from cloudrig.tui import CloudrigApp
+
     error = None
     selected_id = None
     while True:
@@ -141,40 +187,43 @@ def dashboard(api, args):
             elif isinstance(result, InstanceAction):
                 action(api, result.instance, result.action, args)
                 selected_id = result.instance.id
+        except Cancelled:
+            pass
         except CrigError as failure:
             error = str(failure)
         args.rented = True
 
 
-def doctor():
-    provider = state.load().get("provider") or "vastai"
-    check_service(provider)
-    console.print(
-        "Protected service is ready. Editor connections need VS Code with Remote - SSH and OpenSSH 8.9+.",
-        style="crig.ok",
-    )
-
-
-def dispatch(args):
+def dispatch(args) -> None:
     if args.disk < 1 or args.count < 1:
         raise CrigError("Disk size and GPU count must be positive.")
-    provider = args.provider or ("vastai" if args.demo else state.load().get("provider"))
-    if not provider:
-        raise CrigError("Run crig in your terminal to connect an account, or use crig --demo.")
-    api = Demo() if args.demo else BrokerProvider(provider)
-    if args.words:
-        if args.words == ["login"]:
-            if args.demo:
-                raise CrigError("Demo mode does not change accounts.")
-            login(provider)
-            return
-        if len(args.words) != 2:
-            raise CrigError("Use crig NAME code, stop, or destroy. Run crig for the dashboard.")
-        name, command = args.words
-        if command not in {"code", "stop", "destroy"}:
-            raise CrigError("Only code, stop, and destroy are available. Other workflows are deferred.")
-        action(api, resolve(api, name), command, args)
+    if args.words == ["login"]:
+        if args.demo:
+            raise CrigError("Demo mode does not change accounts.")
+        login()
         return
+    if args.words == ["logout"]:
+        if args.demo:
+            raise CrigError("Demo mode does not change accounts.")
+        logout()
+        return
+    if args.words and (len(args.words) != 2 or args.words[1] not in {"code", "stop", "destroy"}):
+        raise CrigError("Choose code, stop, or destroy. Run crig for the dashboard.")
+
+    if not args.demo and not vault.has_credentials():
+        if not args.plain and not args.json and sys.stdin.isatty():
+            login()
+            if not args.words and args.gpu is None and not args.rented:
+                args.gpu = ""
+        else:
+            raise CrigError("Not logged in. Run crig login in your own terminal, or try crig --demo.")
+
+    api = Demo() if args.demo else vast.VastClient()
+    if args.words:
+        target, command = args.words
+        action(api, resolve(api, target), command, args)
+        return
+
     args.rented = args.gpu is None
     if args.plain or args.json or not sys.stdin.isatty():
         rows = api.instances() if args.rented else api.offers(args.gpu or "", args.disk, args.count)
@@ -183,53 +232,20 @@ def dispatch(args):
         dashboard(api, args)
 
 
-def main():
-    argv = sys.argv[1:]
+def main() -> None:
     try:
-        if argv and argv[0] == "setup":
-            from cloudrig.onboarding import setup
-
-            setup(argv[1:])
-            return
-        if argv and argv[0] in {"update", "uninstall"}:
-            from cloudrig.installation import uninstall, update
-
-            (update if argv[0] == "update" else uninstall)(argv[1:])
-            return
-        if argv == ["doctor"]:
-            doctor()
-            return
-        if argv == ["self-test"]:
-            admin("self-test")
-            console.print("Protected service checks passed.", style="crig.ok")
-            return
-        if not argv and sys.stdin.isatty():
-            if not state.load().get("provider"):
-                from cloudrig.onboarding import setup
-
-                if not setup([]):
-                    return
-            else:
-                from cloudrig.installation import ensure_service
-
-                ensure_service(state.load()["provider"])
-        dispatch(parser().parse_intermixed_args(argv))
+        dispatch(parser().parse_intermixed_args(sys.argv[1:]))
+    except Cancelled:
+        console.print("Cancelled.")
+        raise SystemExit(130) from None
     except CrigError as error:
         console.print(Text(f"crig: {error}", style="crig.error"))
         raise SystemExit(1) from None
     except (KeyboardInterrupt, EOFError):
-        console.print("\nCancelled. Check crig --rented if a rental was submitted.")
+        console.print("\nInterrupted.")
         raise SystemExit(130) from None
     except OSError as error:
         console.print(Text(f"crig: {error.strerror or 'Local operation failed'}", style="crig.error"))
-        raise SystemExit(1) from None
-
-    except Exception as error:
-        console.print(
-            "Unexpected failure. No automatic retry was made. Check crig --rented before retrying.",
-            style="crig.error",
-        )
-        console.print(f"Diagnostic: {json.dumps(safe_diagnostic(error))}", markup=False, style="crig.muted")
         raise SystemExit(1) from None
 
 

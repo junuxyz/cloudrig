@@ -1,3 +1,3 @@
-"""Cloudrig, invoked as crig."""
+"""Rent Vast.ai GPUs, open VS Code, stop, and delete."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

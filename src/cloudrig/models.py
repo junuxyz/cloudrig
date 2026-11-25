@@ -5,17 +5,17 @@ from dataclasses import asdict, dataclass
 
 
 class CrigError(Exception):
-    """An error message the CLI can display without exposing credentials."""
+    """An error safe to display to the user."""
 
 
-class RentalNotSubmitted(CrigError):
-    """The protected helper confirmed that no paid request was submitted."""
+class Cancelled(CrigError):
+    """The user cancelled an action before it was submitted."""
 
 
 class RateLimited(CrigError):
     def __init__(self, seconds: int):
         self.seconds = seconds
-        super().__init__(f"Provider is limiting requests. Waiting {seconds}s before checking again.")
+        super().__init__(f"Vast.ai request limit reached. Try again in {seconds}s.")
 
 
 def safe_text(value: str) -> None:
@@ -45,11 +45,6 @@ def number(value: float, *, positive: bool = False) -> None:
         raise CrigError(f"Use a finite number {limit}.")
 
 
-def provider_name(value: str) -> None:
-    if value not in {"vastai", "runpod"}:
-        raise CrigError("Unknown provider.")
-
-
 @dataclass(frozen=True)
 class Offer:
     id: str
@@ -66,15 +61,11 @@ class Offer:
     reliability: float | None = None
 
     def __post_init__(self):
-        provider_name(self.provider)
+        if self.provider != "vastai":
+            raise CrigError("Only Vast.ai is supported.")
+        instance_id(self.id)
         for value in (self.gpu, self.region, self.cloud, self.availability):
             safe_text(value)
-        if self.provider == "vastai":
-            instance_id(self.id)
-        else:
-            safe_text(self.id)
-            if len(self.id.split("|")) != 3:
-                raise CrigError("Invalid RunPod offer ID.")
         if not isinstance(self.count, int) or isinstance(self.count, bool) or self.count < 1:
             raise CrigError("Invalid GPU count.")
         number(self.vram, positive=True)
@@ -110,14 +101,13 @@ class Instance:
     port: int | None = None
     user: str = "root"
     direct: bool = True
-    public_key: str | None = None
-    agent_socket: str | None = None
-    known_hosts: str | None = None
-    approved: bool = False
+    proxy_host: str | None = None
+    proxy_port: int | None = None
 
     def __post_init__(self):
         instance_id(self.id)
-        provider_name(self.provider)
+        if self.provider != "vastai":
+            raise CrigError("Only Vast.ai is supported.")
         for value in (self.name, self.gpu, self.region, self.status):
             safe_text(value)
         if not isinstance(self.count, int) or isinstance(self.count, bool) or self.count < 1:

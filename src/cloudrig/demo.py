@@ -1,10 +1,10 @@
-from cloudrig.broker import DEFAULT_IMAGES
 from cloudrig.models import Instance, Offer
+from cloudrig.vast import DEFAULT_IMAGE
 
 
 class Demo:
     name = "vastai"
-    default_image = DEFAULT_IMAGES[name]
+    default_image = DEFAULT_IMAGE
 
     def offers(self, query: str, disk: int = 40, count: int = 1) -> list[Offer]:
         query = query.casefold()

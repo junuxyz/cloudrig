@@ -119,7 +119,7 @@ class Checkout(Dialog):
             yield Static("Billing starts when rented.", classes="dialog-note")
             yield Static("", id="checkout-error")
             with Horizontal(classes="dialog-actions"):
-                yield Static("Asks for your password.", id="next-step")
+                yield Static("Asks for your PIN.", id="next-step")
                 yield Button("Cancel", id="cancel")
                 yield Button("Rent GPU", variant="primary", id="rent")
 
@@ -252,8 +252,8 @@ class Actions(Dialog):
     def groups(self) -> list[tuple[str, list[tuple[str, str, str]]]]:
         manage = []
         if self.instance.status not in {"stopped", "exited"}:
-            manage.append(("Stop instance", "stop", "sudo"))
-        manage.append(("Delete instance", "destroy", "sudo"))
+            manage.append(("Stop instance", "stop", "pin"))
+        manage.append(("Delete instance", "destroy", "pin"))
         groups = []
         if self.instance.status not in {"stopped", "exited", "terminated"}:
             groups.append(("connect", [("Open in VS Code", "code", "")]))
@@ -336,7 +336,8 @@ class Help(Dialog):
                 text.append(f"{key:<11}", style=colors["ink"])
                 text.append(f"{label}\n", style=colors["ink-2"])
         text.append(
-            "\nDelete has no shortcut. Renting, stopping, and deleting ask for sudo.", style=colors["ink-3"]
+            "\nDelete has no shortcut. Renting, stopping, and deleting ask for your PIN.",
+            style=colors["ink-3"],
         )
         self.query_one("#help-body", Static).update(text)
 
@@ -706,7 +707,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             self.load_error = str(error)
             self.notify(str(error), title="Could not load", severity="error", timeout=8)
         except Exception:
-            self.load_error = "Could not read provider data. Run crig doctor, then retry."
+            self.load_error = "Could not read provider data. Check your login or network, then retry."
             self.notify(
                 "Details withheld to protect credentials.",
                 title="Could not load",

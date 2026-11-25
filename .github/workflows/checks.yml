@@ -14,27 +14,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: admin/go.mod
-          cache-dependency-path: admin/go.sum
-      - name: Install Python
-        run: uv python install 3.12
+      - run: uv python install 3.12
       - run: uv sync --locked --group dev --python 3.12
-      - run: uv run ruff check src tests scripts/preview.py hatch_build.py
-      - name: Check shell syntax
-        run: |
-          for script in scripts/*.sh; do /bin/sh -n "$script"; done
+      - run: uv run ruff check src tests scripts/preview.py
       - run: uv run pytest -q
-      - run: go test -race ./...
-        working-directory: admin
-      - run: go vet ./...
-        working-directory: admin
-      - run: ./scripts/build-admin.sh
       - run: uv build
