@@ -13,7 +13,7 @@ from cloudrig.style import CLI_THEME
 console = Console(highlight=False, theme=CLI_THEME)
 
 
-def run_quietly(command: list[str], *, cwd=None):
+def run_quietly(command: list[str], *, cwd=None, echo_error: bool = True):
     """Show noninteractive tool output only when the tool fails."""
     result = subprocess.run(
         command,
@@ -24,7 +24,7 @@ def run_quietly(command: list[str], *, cwd=None):
         text=True,
         check=False,
     )
-    if result.returncode and result.stdout:
+    if echo_error and result.returncode and result.stdout:
         console.print(Text(result.stdout.rstrip()))
     return result
 
@@ -32,7 +32,7 @@ def run_quietly(command: list[str], *, cwd=None):
 @contextmanager
 def waiting():
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn("dots"),
         TextColumn("{task.description}"),
         TimeElapsedColumn(),
         console=console,

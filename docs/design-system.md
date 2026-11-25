@@ -13,7 +13,8 @@ Cloudrig shares one visual and interaction language across its Textual TUI, Rich
 
 - Borders or box-drawing frames (`border: round`, `┌`, `│`, `╭`) on tinted surfaces.
 - Vertical left accent stripes (`▎`, `┃`, `border-left: thick`) on rows, tabs, inputs, or modals.
-- Middle dots (`·`) or pipes (`|`) as inline separators; use whitespace instead.
+- Middle dots (`·`) or pipes (`|`) as inline separators. Use whitespace instead.
+- Semicolons (`;`) anywhere in copy, including UI text, notes, errors, CLI output, and these docs. Split the thought into two sentences or rewrite it with a comma or a conjunction.
 - Pill or badge backgrounds around tabs, counts, or mode tags (such as `demo`).
 - Full-width horizontal divider lines slicing the header, inspector, or footer.
 - Emojis, decorative icons, or Rich `dim` / `italic` / `reverse` in the TUI.
@@ -54,7 +55,7 @@ Cloudrig ships four built-in themes in `src/cloudrig/style.py`, switchable from 
 - `cloudrig-warm` — warm dark neutral
 - `cloudrig-ansi` — inherits the terminal's own background and ANSI colors
 
-Other Textual themes derive surface and ink steps automatically via `style.css_variables()`. Every built-in theme must maintain readable contrast across `canvas`, `surface`, and `elevated` (WCAG AA `≥ 4.5:1` for `ink`, `ink-2`, and semantic colors; `≥ 3:1` for muted `ink-3`), verified in `tests/test_style.py`.
+Other Textual themes derive surface and ink steps automatically via `style.css_variables()`. Every built-in theme must maintain readable contrast across `canvas`, `surface`, and `elevated` (WCAG AA `≥ 4.5:1` for `ink`, `ink-2`, and semantic colors, `≥ 3:1` for muted `ink-3`), verified in `tests/test_style.py`.
 
 ## Typography, Glyphs & Formatting
 
@@ -66,19 +67,19 @@ Other Textual themes derive surface and ink steps automatically via `style.css_v
 - **Value formatting:** Route all numbers and labels through `src/cloudrig/style.py`:
   - Prices: 3 decimals hourly (`$0.426/hr`, `+` suffix when storage is excluded), 2 decimals daily (`$10.21/day`) and for balances, whole dollars monthly (`$306/mo`).
   - Hardware & reliability: `GB` with a space (`32 GB`), 1-decimal percentages (`99.8%`), multi-GPU counts with `×` (`RTX 5090 ×2`, omit `×1`), and total VRAM across all GPUs in both table and inspector (with per-GPU breakdown in the inspector when count > 1).
-  - Runway & names: compact duration in the header (`~11h 38m`, `>60d`, `0m`), full duration with local ETA in detailed/CLI views, and `name (id)` for labeled instances.
+  - Runway & names: full runway with local ETA in wide headers and detailed/CLI views (`~11h 38m (Nov 26, 02:32) until $0`), compact `until $0` on narrow screens, and `name (id)` for labeled instances.
 
 ## Layout & Components
 
 ### Responsive Structure
 
 - **Wide:** Split view with a full-width data table on the left and a borderless `$surface` inspector panel on the right.
-- **Compact:** Full-width table with a short bottom summary strip instead of the side inspector; ID/offer columns move into the table.
+- **Compact:** Full-width table with a short bottom summary strip instead of the side inspector. ID/offer columns move into the table.
 - **Short:** Tighten outer margins and vertical gaps so data rows keep most of the viewport.
 
 ### Workspace Shell
 
-- **Header:** Open on `$canvas` with no bottom divider. Wordmark and navigation tabs (`GPU offers`, `Instances` with running count) sit left; balance, compact runway, and optional `demo` tag sit right. Active tab is bold `$ink`, inactive tabs are `$ink-3`.
+- **Header:** Open on `$canvas` with no bottom divider. Wordmark and navigation tabs (`GPU offers`, `Instances` with running count) sit left. Balance, runway (`until $0`), and optional `demo` tag sit right. Active tab is bold `$ink`, inactive tabs are `$ink-3`.
 - **Filter strip:** Single borderless `$surface` row (`$active` on focus) spanning the table width, with `/` + text input on the left and live summary or inline loading spinner on the right.
 - **Data table:** Open on `$canvas` with dynamic column widths that fill the available space and right-aligned numeric columns. Focused selection uses full-width `$active` fill + bold text (softer `$hover` when blurred). Stopped instances stay subdued so active ones stand out.
 - **Inspector:** Borderless `$surface` panel separated into identity, pricing, right-aligned key/value specs, and pinned bottom action hints using blank rows rather than divider lines.
@@ -86,14 +87,14 @@ Other Textual themes derive surface and ink steps automatically via `style.css_v
 
 ### Overlays & States
 
-- **Dialogs & palette:** Borderless `$elevated` cards over `$scrim`.
-  - `Checkout` pairs clean label/input rows (`$surface` → `$active` on focus) with an inset `$surface` cost breakdown. `Cancel` stays neutral; `Rent GPU` uses high-contrast monochrome at rest (`$ink` fill, `$canvas` text) and shifts to `$accent` on focus/hover.
+- **Dialogs & palette:** Borderless `$elevated` cards over `$scrim`. Clicking outside the card on `$scrim` cancels and dismisses the dialog.
+  - `Checkout` pairs clean label/input rows (`$surface` → `$active` on focus) with selectable Vast.ai image presets beneath `image`, `↑`/`↓` field navigation (`name` → `disk` → `image` → presets → `Rent GPU`), and an inset `$surface` cost breakdown. `Cancel` stays neutral. `Rent GPU` uses high-contrast monochrome at rest (`$ink` fill, `$canvas` text) and shifts to `$accent` on focus/hover.
   - `Actions` groups choices (`connect`, `manage`), marks the focused row with `›`, and keeps `Delete instance` neutral until focused.
   - `CommandPalette` (`ctrl+p`) shares the same borderless `$elevated` styling and exposes navigation, sorting, refresh, help, and theme switching.
 - **Loading, empty, and error states:**
-  - Show a centered loading message only on initial empty load; subsequent refreshes and polls use inline spinners while keeping existing rows visible.
+  - Show a centered loading message only on initial empty load. Subsequent refreshes and polls use inline spinners while keeping existing rows visible.
   - Empty states explain why nothing matched and show the recovery key (`esc` to clear filter or `1` to browse GPUs).
-  - Errors appear in a dismissible inline `$surface` strip above the table; transient confirmations use auto-dismissing `$elevated` toasts.
+  - Errors appear in a dismissible inline `$surface` strip above the table. Transient confirmations use auto-dismissing `$elevated` toasts.
 
 ## Keyboard, CLI & `/dev/tty`
 
@@ -108,7 +109,7 @@ Other Textual themes derive surface and ink steps automatically via `style.css_v
 | Table | `↑` `↓` / `j` `k` | Move selection |
 | Offers | `s` | Cycle sort (`price`, `vram`, `region`, `gpus`) |
 | Table | `enter` | Open `Checkout` (Offers) or `Actions` (Instances) |
-| Instances | `c` / `x` | Direct VS Code / Stop (no hotkey for Delete) |
+| Instances | `c` / `x` / `d` | Direct VS Code / Stop / Delete (mutations are PIN-gated) |
 | Table / Filter | `esc` | Clear filter, dismiss error, or return to table |
 
 - **TUI handoff:** Interactive actions that require a `/dev/tty` PIN prompt or launch VS Code suspend the live TUI and resume in place with a refresh and toast, rather than exiting and restarting the app.

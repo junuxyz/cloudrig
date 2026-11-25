@@ -21,6 +21,8 @@ async def main():
         async with app.run_test(size=size) as pilot:
             app.theme = theme
             await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             if action:
                 await pilot.press(action)
                 await pilot.pause()

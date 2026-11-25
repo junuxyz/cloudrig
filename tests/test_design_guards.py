@@ -1,4 +1,4 @@
-"""Keep shared visual tokens and layout constraints from drifting."""
+"""Keep shared visual tokens, anti-patterns, and layout constraints from drifting."""
 
 import re
 from pathlib import Path
@@ -15,15 +15,21 @@ SOURCES = sorted((Path(__file__).parents[1] / "src/cloudrig").glob("*.py"))
 
 
 @pytest.mark.parametrize("path", [path for path in SOURCES if path.name != "style.py"], ids=lambda p: p.name)
-def test_colors_and_opacities_live_only_in_style(path):
+def test_colors_opacities_and_glyphs_live_only_in_style(path):
     source = path.read_text()
     assert not re.findall(r"#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b", source), "hex color outside style.py"
-    assert not re.findall(r"\$[a-z-]+ \d+%", source), "CSS opacity outside style.py; use an ink or tint"
+    assert not re.findall(r"\$[a-z-]+ \d+%", source), "CSS opacity outside style.py; use a surface or ink"
+    for glyph in ("●", "○", "✕"):
+        assert glyph not in source, f"glyph {glyph!r} outside style.py"
 
 
 @pytest.mark.parametrize("path", SOURCES, ids=lambda p: p.name)
-def test_no_middle_dot_separator(path):
-    assert "·" not in path.read_text(), "separate inline items with three spaces"
+def test_forbidden_anti_patterns_never_appear(path):
+    source = path.read_text()
+    assert "·" not in source, "separate inline items with spaces, never middle dots"
+    assert "▎" not in source and "┃" not in source, "no vertical left-highlight bars"
+    assert "border-left: thick" not in source, "no thick left accent stripes"
+    assert "border: round" not in source, "no border: round bleed on tinted surfaces"
 
 
 def clipped(app) -> list[str]:
@@ -46,6 +52,7 @@ def clipped(app) -> list[str]:
     return problems
 
 
+@pytest.mark.parametrize("size", [(80, 24), (120, 36)], ids=["80x24", "120x36"])
 @pytest.mark.parametrize(
     ("query", "rented", "keys"),
     [
@@ -59,9 +66,9 @@ def clipped(app) -> list[str]:
     ],
     ids=["offers", "filter", "checkout", "help", "empty", "instances", "actions"],
 )
-async def test_nothing_is_clipped_at_80_by_24(query, rented, keys):
+async def test_nothing_is_clipped_at_standard_sizes(size, query, rented, keys):
     app = CloudrigApp(Demo(), query, rented=rented, demo=True)
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with app.run_test(size=size) as pilot:
         await pilot.pause()
         for key in keys:
             await pilot.press(key)

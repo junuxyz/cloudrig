@@ -147,7 +147,7 @@ def unlock_action_key(summary: str) -> str:
     except (OSError, ValueError) as error:
         raise CrigError("Saved key file is damaged. Run crig login.") from error
 
-    pin = read_tty_secret("PIN (empty to cancel): ", header=f"\n{summary}\n\n")
+    pin = read_tty_secret("  PIN (enter to cancel): ", header=f"\n{summary}\n\n")
     if not pin:
         raise Cancelled("Cancelled.")
     return decrypt_secret(envelope, pin)

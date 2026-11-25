@@ -7,6 +7,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -289,12 +290,58 @@ def ssh_ready(ident: str, host: str, port: int, user: str, timeout: float) -> bo
 def open_code(ident: str, remote_path: str = "/workspace") -> None:
     if not remote_path.startswith("/") or any(ord(c) < 32 for c in remote_path):
         raise CrigError("Use an absolute remote workspace path, for example /workspace.")
-    result = run_quietly([require("code"), "--remote", f"ssh-remote+{alias(ident)}", remote_path])
+    result = run_quietly(
+        [require("code"), "--remote", f"ssh-remote+{alias(ident)}", remote_path],
+        echo_error=False,
+    )
     if result.returncode:
-        raise CrigError(f"code exited with status {result.returncode}.")
+        detail = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        suffix = f" ({detail[-1]})" if detail else ""
+        raise CrigError(f"code exited with status {result.returncode}{suffix}.")
 
 
-def connect_editor(api, identifier: str, timeout: float = 300, progress=None) -> None:
+def _wait_or_cancel(seconds: float, cancel: threading.Event | None) -> bool:
+    if seconds <= 0:
+        return bool(cancel and cancel.is_set())
+    if cancel is not None:
+        return cancel.wait(seconds)
+    time.sleep(seconds)
+    return False
+
+
+def try_connect_editor_now(api, item: Instance, timeout: float = 3.0) -> tuple[bool, str]:
+    """Open VS Code immediately if the instance is already reachable, else return (False, status)."""
+    require("code")
+    require("ssh")
+    fresh = api.instance(item.id)
+    if fresh.status in {"stopped", "exited", "failed", "error", "terminated"}:
+        raise CrigError(f"Instance {item.id} is {fresh.status}. Choose a running GPU.")
+    if fresh.status != "running":
+        return False, f"GPU is {fresh.status}"
+    endpoints = _endpoints(fresh)
+    if not endpoints:
+        return False, "waiting for SSH address"
+    probe_timeout = min(timeout, 3.0)
+    with ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
+        futures = [
+            (host, port, direct, pool.submit(ssh_ready, fresh.id, host, port, fresh.user, probe_timeout))
+            for host, port, direct in endpoints
+        ]
+        for host, port, _direct, fut in futures:
+            if fut.result():
+                install_alias(fresh.id, host, port, fresh.user)
+                open_code(fresh.id)
+                return True, "opened"
+    return False, "waiting for SSH login"
+
+
+def connect_editor(
+    api,
+    identifier: str,
+    timeout: float = 300,
+    progress=None,
+    cancel: threading.Event | None = None,
+) -> bool:
     require("code")
     require("ssh")
     deadline = time.monotonic() + timeout
@@ -307,6 +354,8 @@ def connect_editor(api, identifier: str, timeout: float = 300, progress=None) ->
     last_refresh = 0.0
 
     while time.monotonic() < deadline:
+        if cancel and cancel.is_set():
+            return False
         now = time.monotonic()
         # Once running with known endpoints, avoid paying a ~0.8s Vast.ai API round-trip every poll.
         needs_refresh = (
@@ -323,9 +372,12 @@ def connect_editor(api, identifier: str, timeout: float = 300, progress=None) ->
                 stage = f"Vast.ai request limit reached. Checking again in {error.seconds}s"
                 if progress:
                     progress(stage)
-                time.sleep(min(error.seconds, max(0, deadline - time.monotonic())))
+                if _wait_or_cancel(min(error.seconds, max(0, deadline - time.monotonic())), cancel):
+                    return False
                 continue
 
+        if cancel and cancel.is_set():
+            return False
         item = cached_item
         if item.status in {"stopped", "exited", "failed", "error", "terminated"}:
             raise CrigError(f"Instance {identifier} is {item.status}. Choose a running GPU.")
@@ -333,7 +385,8 @@ def connect_editor(api, identifier: str, timeout: float = 300, progress=None) ->
             stage = f"GPU is {item.status}. Waiting for container startup"
             if progress:
                 progress(stage)
-            time.sleep(min(2.0, max(0, deadline - time.monotonic())))
+            if _wait_or_cancel(min(2.0, max(0, deadline - time.monotonic())), cancel):
+                return False
             continue
 
         if not attached:
@@ -348,7 +401,8 @@ def connect_editor(api, identifier: str, timeout: float = 300, progress=None) ->
             stage = "Waiting for the GPU's SSH address"
             if progress:
                 progress(stage)
-            time.sleep(min(1.5, max(0, deadline - time.monotonic())))
+            if _wait_or_cancel(min(1.5, max(0, deadline - time.monotonic())), cancel):
+                return False
             continue
 
         remaining = deadline - time.monotonic()
@@ -363,16 +417,19 @@ def connect_editor(api, identifier: str, timeout: float = 300, progress=None) ->
             ]
             for host, port, direct, fut in futures:
                 if fut.result():
+                    if cancel and cancel.is_set():
+                        return False
                     install_alias(item.id, host, port, item.user)
                     if progress:
                         progress("Opening VS Code" if direct else "Opening VS Code through Vast.ai proxy")
                     open_code(item.id)
-                    return
+                    return True
 
         stage = "Waiting for the GPU to accept SSH login"
         if progress:
             progress(stage)
-        time.sleep(min(1.0, max(0, deadline - time.monotonic())))
+        if _wait_or_cancel(min(1.0, max(0, deadline - time.monotonic())), cancel):
+            return False
 
     raise CrigError(
         f"{stage}. Instance {identifier} is still rented. "

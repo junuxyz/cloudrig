@@ -8,15 +8,15 @@ import socket
 import ssl
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from cloudrig import connections, vault
-from cloudrig.models import CrigError, Instance, Offer, RateLimited, Rental, number
-from cloudrig.style import gb, gpu_label, per_day, per_hour
+from cloudrig.models import CrigError, ImageTemplate, Instance, Offer, RateLimited, Rental, number
+from cloudrig.style import gb, gpu_label, named, per_day, per_hour, total_vram, tty_card
 
 BASE_URL = "https://console.vast.ai"
-DEFAULT_IMAGE = "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime"
+DEFAULT_IMAGE = "vastai/pytorch:@vastai-automatic-tag"
 API_KEY_URL = "https://console.vast.ai/manage-keys/"
 
 READ_PERMISSIONS = {
@@ -238,13 +238,19 @@ def _parse_instance(row: dict) -> Instance:
         port = proxy_port
         direct = False
     count = max(1, int(_num(row.get("num_gpus"))))
+    # cur_state is the target state, not the real one: a new rental reports cur_state "running"
+    # with no actual_status until the container has actually started.
+    status = _text(row.get("actual_status")).lower()
+    if not status:
+        target = _text(row.get("cur_state")).lower()
+        status = target if target and target != "running" else "loading"
     return Instance(
         id=ident,
         provider="vastai",
         name=_text(row.get("label")) or ident,
         gpu=_text(row.get("gpu_name")).replace("_", " "),
         count=count,
-        status=_text(row.get("actual_status")).lower() or _text(row.get("cur_state")).lower() or "loading",
+        status=status,
         hourly=_num(row.get("dph_total")),
         region=_text(row.get("geolocation")) or "Unknown",
         host=host,
@@ -266,11 +272,17 @@ class VastClient:
         self._instances_cache: tuple[float, list[Instance]] | None = None
         self._offers_cache: dict[tuple, tuple[float, list[Offer]]] = {}
         self._balance_cache: tuple[float, float] | None = None
+        self._templates_cache: tuple[float, list[ImageTemplate]] | None = None
 
     def _read_token(self) -> str:
         if vault.has_read_key():
             return vault.get_read_key()
-        return vault.unlock_action_key("UNLOCK VAST.AI\nNo separate read key saved; enter PIN to read.")
+        summary = tty_card(
+            "Unlock Vast.ai",
+            [],
+            note="No separate read key saved. Enter your PIN to read.",
+        )
+        return vault.unlock_action_key(summary)
 
     def _ensure_gpu_names(self, token: str) -> list[str]:
         if self._gpu_names is None:
@@ -399,6 +411,45 @@ class VastClient:
         self._balance_cache = (time.monotonic(), remaining)
         return remaining
 
+    def templates(self, *, fresh: bool = False) -> list[ImageTemplate]:
+        """Fetch Vast.ai's recommended SSH container templates in official sort order."""
+        if not fresh and self._templates_cache and time.monotonic() - self._templates_cache[0] < 300.0:
+            return list(self._templates_cache[1])
+        token = self._read_token()
+        params = urlencode(
+            {"select_filters": json.dumps({"recommended": {"eq": True}, "use_ssh": {"eq": True}})}
+        )
+        result = api_call(
+            "GET", f"/api/v0/template/?{params}", token, base_url=self.base_url, retry_short_429=True
+        )
+        raw_list = (result or {}).get("templates")
+        if not isinstance(raw_list, list):
+            raise CrigError("Vast.ai returned an invalid template list.")
+        ordered = sorted(
+            (row for row in raw_list if isinstance(row, dict) and not row.get("vm")),
+            key=lambda row: (row.get("sort_order") is None, _num(row.get("sort_order"))),
+        )
+        seen: set[str] = set()
+        items: list[ImageTemplate] = []
+        for row in ordered:
+            name = _text(row.get("name")).strip()
+            repo = _text(row.get("image")).strip()
+            tag = _text(row.get("tag")).strip()
+            if not name or not repo:
+                continue
+            image_ref = f"{repo}:{tag}" if tag and ":" not in repo.rsplit("/", 1)[-1] else repo
+            if image_ref in seen:
+                continue
+            disk_raw = row.get("recommended_disk_space")
+            disk = int(_num(disk_raw)) if disk_raw is not None and _num(disk_raw) > 0 else None
+            try:
+                items.append(ImageTemplate(name=name, image=image_ref, disk=disk))
+                seen.add(image_ref)
+            except CrigError:
+                continue
+        self._templates_cache = (time.monotonic(), items)
+        return list(items)
+
     def instance(self, identifier: str) -> Instance:
         for row in self.instances():
             if row.id == identifier:
@@ -421,16 +472,17 @@ class VastClient:
         if current > reviewed + 0.000001:
             raise CrigError("The offer price increased since you reviewed it. Refresh before renting.")
 
-        storage_note = "incl. disk" if live.disk_hourly_gb is not None else "plus storage"
-        summary = "\n".join(
+        storage_note = (
+            f"{gb(rental.disk)} disk included" if live.disk_hourly_gb is not None else "plus storage"
+        )
+        summary = tty_card(
+            f"Rent {rental.name}",
             [
-                f"RENT {rental.name}",
-                f"  GPU:    {gpu_label(live.gpu, live.count)} ({gb(live.vram * live.count)} VRAM)",
-                f"  Region: {live.region}",
-                f"  Rate:   {per_hour(current)} ({per_day(current * 24)})"
-                f"  [{gb(rental.disk)}, {storage_note}]",
-                f"  Image:  {rental.image}",
-            ]
+                ("gpu", f"{gpu_label(live.gpu, live.count)} ({total_vram(live.vram, live.count)} VRAM)"),
+                ("region", live.region),
+                ("rate", f"{per_hour(current)} ({per_day(current * 24)})   {storage_note}"),
+                ("image", rental.image),
+            ],
         )
         action_key = vault.unlock_action_key(summary)
 
@@ -484,7 +536,10 @@ class VastClient:
         return new_id
 
     def attach_ssh_key(self, identifier: str, public_key: str) -> None:
-        summary = f"SSH ACCESS {identifier}\n  Attach a local SSH key so VS Code can connect."
+        summary = tty_card(
+            f"SSH access {identifier}",
+            [("action", "Attach a local SSH key so VS Code can connect.")],
+        )
         action_key = vault.unlock_action_key(summary)
         api_call(
             "POST",
@@ -496,9 +551,11 @@ class VastClient:
 
     def stop(self, target: Instance | str) -> None:
         item = target if isinstance(target, Instance) else self.instance(target)
-        summary = (
-            f"STOP {item.name} ({item.id})   {gpu_label(item.gpu, item.count)}\n"
-            "  Compute billing stops; storage charges may continue until deleted."
+        summary = tty_card(
+            f"Stop {named(item.name, item.id)}",
+            [("gpu", gpu_label(item.gpu, item.count))],
+            note="Compute billing stops. Storage charges may continue until deleted.",
+            tone="warn",
         )
         action_key = vault.unlock_action_key(summary)
         api_call(
@@ -512,9 +569,11 @@ class VastClient:
 
     def destroy(self, target: Instance | str) -> None:
         item = target if isinstance(target, Instance) else self.instance(target)
-        summary = (
-            f"DESTROY {item.name} ({item.id})   {gpu_label(item.gpu, item.count)}\n"
-            "  All files on this GPU will be permanently deleted."
+        summary = tty_card(
+            f"Delete {named(item.name, item.id)}",
+            [("gpu", gpu_label(item.gpu, item.count))],
+            note="All files on this GPU will be permanently deleted.",
+            tone="danger",
         )
         action_key = vault.unlock_action_key(summary)
         api_call(

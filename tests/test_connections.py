@@ -75,3 +75,28 @@ def test_connect_editor_falls_back_to_proxy_and_attaches_key(monkeypatch):
 def test_rejects_unsafe_ssh_host():
     with pytest.raises(CrigError, match="invalid SSH hostname"):
         connections.install_alias("777", "bad host; rm -rf /", 22)
+
+
+def test_try_connect_editor_now_reports_loading_status(monkeypatch):
+    class LoadingAPI:
+        def instance(self, ident):
+            return Instance(ident, "vastai", "train", "RTX 5090", 1, "loading", 0.4, "US")
+
+    monkeypatch.setattr(connections, "require", lambda binary: f"/usr/bin/{binary}")
+    opened, status = connections.try_connect_editor_now(LoadingAPI(), LoadingAPI().instance("777"))
+    assert opened is False
+    assert status == "GPU is loading"
+
+
+def test_connect_editor_honors_cancel_event(monkeypatch):
+    import threading
+
+    class LoadingAPI:
+        def instance(self, ident):
+            return Instance(ident, "vastai", "train", "RTX 5090", 1, "loading", 0.4, "US")
+
+    monkeypatch.setattr(connections, "require", lambda binary: f"/usr/bin/{binary}")
+    monkeypatch.setattr(connections, "has_keypair", lambda ident: True)
+    cancel = threading.Event()
+    cancel.set()
+    assert connections.connect_editor(LoadingAPI(), "777", timeout=30, cancel=cancel) is False

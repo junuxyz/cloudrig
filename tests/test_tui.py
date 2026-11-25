@@ -62,6 +62,7 @@ async def test_checkout_keeps_invalid_rentals_in_the_review(field, value, messag
         await pilot.press("enter")
         await pilot.pause()
         app.screen.query_one(f"#{field}", Input).value = value
+        await pilot.pause()
         await pilot.click("#rent")
         assert isinstance(app.screen, Checkout)
         assert message in str(app.screen.query_one("#checkout-error", Static).render())
@@ -128,7 +129,7 @@ async def test_tabs_switch_views_and_action_hotkeys():
     assert app.return_value.action == "code"
 
 
-async def test_escape_clears_filter_and_delete_has_no_hotkey():
+async def test_escape_clears_filter_and_actions_delete_hotkey():
     app = CloudrigApp(Demo(), rented=True, demo=True)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
@@ -140,10 +141,14 @@ async def test_escape_clears_filter_and_delete_has_no_hotkey():
         assert len(app.visible_rows) == 3
         await pilot.press("enter")
         await pilot.pause()
-        for key in "wertyuiopasdfghjklzxcvbnm":
+        for key in "wertyuiopasfghjklzvbnm":
             if key not in Actions.HOTKEYS:
                 await pilot.press(key)
         assert isinstance(app.screen, Actions)
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.return_value, InstanceAction)
+    assert app.return_value.action == "destroy"
 
 
 async def test_theme_choice_is_remembered_outside_demo():
@@ -221,11 +226,167 @@ async def test_loading_instance_animates_braille_spinner():
         assert second.endswith(" loading") and second[0] in SPINNER and second != first
 
 
-async def test_header_shows_remaining_budget_and_runway():
+async def test_header_shows_full_runway_on_wide_and_compact_until_zero_on_narrow():
     app = CloudrigApp(Demo(), rented=True, demo=True)
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause()
         await app.workers.wait_for_complete()
         header = str(app.query_one("#provider", Static).render())
-        assert "balance $18.50" in header
+        assert "$18.50" in header
         assert ") until $0" in header
+        inspector = str(app.query_one("#inspector", Static).render())
+        assert "until $0" not in inspector  # Runway is account-wide; it lives in the header only.
+
+    narrow_app = CloudrigApp(Demo(), rented=True, demo=True)
+    async with narrow_app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        await narrow_app.workers.wait_for_complete()
+        header = str(narrow_app.query_one("#provider", Static).render())
+        assert "$18.50" in header
+        assert "until $0" in header
+
+
+async def test_direct_instance_hotkeys_include_delete_and_code():
+    app = CloudrigApp(Demo(), rented=True, demo=True)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.return_value, InstanceAction)
+    assert app.return_value.action == "destroy"
+
+    app = CloudrigApp(Demo(), rented=True, demo=True)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.pause()
+    assert isinstance(app.return_value, InstanceAction)
+    assert app.return_value.action == "code"
+
+
+async def test_async_vscode_shows_status_and_opens_without_blocking(monkeypatch):
+    import threading
+
+    from cloudrig import connections
+
+    started = threading.Event()
+    release = threading.Event()
+    opened = []
+
+    def fake_connect(api, ident, *, timeout=300, progress=None, cancel=None):
+        if progress:
+            progress("GPU is loading. Waiting for container startup")
+        started.set()
+        release.wait(timeout=5)
+        if cancel and cancel.is_set():
+            return False
+        if progress:
+            progress("Opening VS Code")
+        opened.append(ident)
+        return True
+
+    monkeypatch.setattr(connections, "has_keypair", lambda ident: True)
+    monkeypatch.setattr(connections, "connect_editor", fake_connect)
+
+    app = CloudrigApp(Demo(), rented=True, demo=False, action_runner=lambda _r: (None, None))
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.pause()
+        assert started.wait(timeout=3)
+        await pilot.pause()
+        assert app.query_one("#action-feedback").display
+        activity = str(app.query_one("#activity", Static).render())
+        assert "GPU is loading" in activity
+        assert "will open VS Code when ready" in activity
+        release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert opened == [app.visible_rows[0].id]
+        assert not app.query_one("#action-feedback").display
+
+
+async def test_in_session_action_runner_handles_errors_without_exiting():
+    calls = []
+
+    def runner(result):
+        calls.append(result)
+        raise CrigError("Wrong PIN.")
+
+    app = CloudrigApp(Demo(), rented=True, demo=True, action_runner=runner)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        assert len(calls) == 1
+        assert app.action_error == "Wrong PIN."
+        assert app.query_one("#action-feedback").display
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.action_error is None
+        assert not app.query_one("#action-feedback").display
+
+
+async def test_checkout_click_outside_cancels():
+    app = CloudrigApp(Demo(), "5090", demo=True)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, Checkout)
+        # Clicking inside the checkout card keeps it open.
+        await pilot.click("#checkout-title")
+        await pilot.pause()
+        assert isinstance(app.screen, Checkout)
+        # Clicking the scrim outside the modal cancels.
+        await pilot.click(offset=(1, 1))
+        await pilot.pause()
+        assert not isinstance(app.screen, Checkout)
+        assert app.return_value is None
+
+
+async def test_checkout_arrow_navigation_and_image_presets():
+    app = CloudrigApp(Demo(), "5090", demo=True)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, Checkout)
+        assert app.screen.focused.id == "rental-name"
+
+        await pilot.press("down")
+        assert app.screen.focused.id == "rental-disk"
+
+        await pilot.press("down")
+        assert app.screen.focused.id == "rental-image"
+
+        # Step into Vast.ai templates (PyTorch -> NVIDIA CUDA -> vLLM) and pick vLLM.
+        await pilot.press("down", "down", "down")
+        assert app.screen.focused.id == "image-preset-2"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen.query_one("#rental-image", Input).value == "vastai/vllm:v0.32.0-cuda-13.0"
+        assert app.screen.focused.id == "rent"
+
+        # Up navigates cleanly back from Rent GPU to the last visible template.
+        await pilot.press("up")
+        assert app.screen.focused.id == f"image-preset-{len(Demo().templates()) - 1}"
+
+        # Typing in image filters Vast.ai templates live.
+        image_input = app.screen.query_one("#rental-image", Input)
+        image_input.focus()
+        image_input.value = "sglang"
+        await pilot.pause()
+        visible = [opt for opt in app.screen.query(".image-option") if opt.display]
+        assert len(visible) == 1 and visible[0].label == "SGLang"
+
+        # Clicking the filtered template selects its full Vast.ai image ref.
+        await pilot.click(f"#{visible[0].id}")
+        await pilot.pause()
+        assert image_input.value == "vastai/sglang:v0.5.22-cuda-13.0"
+
+        await pilot.click("#rent")
+        await pilot.pause()
+    assert isinstance(app.return_value, Rental)
+    assert app.return_value.image == "vastai/sglang:v0.5.22-cuda-13.0"

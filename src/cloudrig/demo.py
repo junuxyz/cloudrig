@@ -1,4 +1,4 @@
-from cloudrig.models import Instance, Offer
+from cloudrig.models import ImageTemplate, Instance, Offer
 from cloudrig.vast import DEFAULT_IMAGE
 
 
@@ -144,3 +144,16 @@ class Demo:
 
     def balance(self) -> float:
         return 18.50
+
+    def templates(self) -> list[ImageTemplate]:
+        return [
+            ImageTemplate("PyTorch (Vast)", "vastai/pytorch:@vastai-automatic-tag", disk=16),
+            ImageTemplate("NVIDIA CUDA", "vastai/base-image:@vastai-automatic-tag", disk=32),
+            ImageTemplate("vLLM", "vastai/vllm:v0.32.0-cuda-13.0", disk=24),
+            ImageTemplate("SGLang", "vastai/sglang:v0.5.22-cuda-13.0", disk=24),
+            ImageTemplate("Llama.cpp", "vastai/llama-cpp:b11876-mix-ec42614-cuda-13.2", disk=32),
+            ImageTemplate("Ollama", "vastai/ollama:0.40.11", disk=32),
+            ImageTemplate("ComfyUI", "vastai/comfy:v0.46.0-cuda-13.2-py312", disk=32),
+            ImageTemplate("TensorFlow CUDA", "vastai/tensorflow:2.19.0-cuda-12.4.1", disk=16),
+            ImageTemplate("PyTorch NGC", "nvcr.io/nvidia/pytorch:26.08-py3", disk=32),
+        ]

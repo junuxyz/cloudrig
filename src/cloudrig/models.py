@@ -151,6 +151,21 @@ class Rental:
 
 
 @dataclass(frozen=True)
+class ImageTemplate:
+    name: str
+    image: str
+    disk: int | None = None
+
+    def __post_init__(self):
+        safe_text(self.name)
+        safe_text(self.image)
+        if not self.name.strip():
+            raise CrigError("Template name cannot be empty.")
+        if not self.image or any(c.isspace() for c in self.image):
+            raise CrigError("Enter a container image without spaces.")
+
+
+@dataclass(frozen=True)
 class InstanceAction:
     instance: Instance
     action: str

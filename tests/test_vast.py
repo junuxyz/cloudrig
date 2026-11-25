@@ -176,16 +176,16 @@ def test_offers_instances_rent_stop_destroy_and_key_separation(monkeypatch):
         new_id = client.rent(Rental(offers[0], "train-1", 40, vast.DEFAULT_IMAGE))
         assert new_id == "777"
         assert connections.has_keypair("777")
-        assert "RENT train-1" in summaries[-1]
+        assert "Rent train-1" in summaries[-1]
 
         items = client.instances()
         assert len(items) == 1 and items[0].host == "203.0.113.5" and items[0].proxy_host == "ssh5.vast.ai"
 
         client.stop(items[0])
-        assert "STOP train-1" in summaries[-1]
+        assert "Stop train-1" in summaries[-1]
 
         client.destroy(items[0])
-        assert "DESTROY train-1" in summaries[-1]
+        assert "Delete train-1" in summaries[-1]
         assert not connections.has_keypair("777")
 
 
@@ -277,3 +277,78 @@ def test_balance_reads_net_credit():
     with FakeVastServer(handle) as server:
         client = vast.VastClient(base_url=server.base_url)
         assert client.balance() == pytest.approx(8.0)
+
+
+def test_templates_fetches_recommended_ssh_templates_in_sort_order_and_caches():
+    vault.save_keys("read-tok", "action-tok", "5678", scoped=True)
+    calls = {"count": 0}
+
+    def handle(method, path, auth, body):
+        assert method == "GET" and path.startswith("/api/v0/template/?")
+        assert auth == "Bearer read-tok"
+        calls["count"] += 1
+        return (
+            200,
+            {
+                "templates": [
+                    {
+                        "name": "vLLM",
+                        "image": "vastai/vllm",
+                        "tag": "v0.32.0-cuda-13.0",
+                        "sort_order": 1190,
+                        "vm": False,
+                        "recommended_disk_space": 24.0,
+                    },
+                    {
+                        "name": "Ubuntu VM",
+                        "image": "docker.io/vastai/kvm",
+                        "tag": "@vastai-automatic-tag",
+                        "sort_order": 1180,
+                        "vm": True,
+                    },
+                    {
+                        "name": "PyTorch (Vast)",
+                        "image": "vastai/pytorch",
+                        "tag": "@vastai-automatic-tag",
+                        "sort_order": 1185,
+                        "vm": False,
+                        "recommended_disk_space": 16.0,
+                    },
+                    {
+                        "name": "Duplicate PyTorch",
+                        "image": "vastai/pytorch",
+                        "tag": "@vastai-automatic-tag",
+                        "sort_order": 1200,
+                        "vm": False,
+                    },
+                ]
+            },
+            None,
+        )
+
+    with FakeVastServer(handle) as server:
+        client = vast.VastClient(base_url=server.base_url)
+        first = client.templates()
+        second = client.templates()
+
+    assert calls["count"] == 1
+    assert [(t.name, t.image, t.disk) for t in first] == [
+        ("PyTorch (Vast)", "vastai/pytorch:@vastai-automatic-tag", 16),
+        ("vLLM", "vastai/vllm:v0.32.0-cuda-13.0", 24),
+    ]
+    assert second == first
+
+
+@pytest.mark.parametrize(
+    "actual,target,expected",
+    [
+        ("loading", "running", "loading"),
+        (None, "running", "loading"),
+        (None, None, "loading"),
+        (None, "stopped", "stopped"),
+        ("running", "running", "running"),
+    ],
+)
+def test_instance_status_reports_the_real_state_not_the_target(actual, target, expected):
+    row = {"id": 1, "actual_status": actual, "cur_state": target}
+    assert vast._parse_instance(row).status == expected

@@ -2,15 +2,16 @@
 
 import argparse
 import json
+import subprocess
 import sys
 
 from rich.table import Table
 from rich.text import Text
 
-from cloudrig import __version__, connections, vast, vault
+from cloudrig import __version__, connections, state, vast, vault
 from cloudrig.demo import Demo
 from cloudrig.models import Cancelled, CrigError, InstanceAction, Rental, sorted_offers
-from cloudrig.style import gb, gpu_label, named, usd
+from cloudrig.style import gpu_label, named, total_vram, usd
 from cloudrig.terminal import console, waiting
 
 
@@ -40,6 +41,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--plain", action="store_true", help="Print a table")
     result.add_argument("--json", action="store_true", help="Print data for scripts")
     result.add_argument("--demo", action="store_true", help="Preview without an account or cloud changes")
+    result.add_argument("--connect-bg", metavar="ID", help=argparse.SUPPRESS)
     return result
 
 
@@ -93,22 +95,39 @@ def print_rows(rows, args) -> None:
     if args.json:
         print(json.dumps([row.to_dict() for row in rows], indent=2))
         return
-    table = Table(box=None, header_style="crig.muted", highlight=False)
+    table = Table(box=None, header_style="crig.muted", highlight=False, padding=(0, 2))
     if args.rented:
-        for name in ("name", "status", "gpu", "price/hr", "region", "id"):
-            table.add_column(name)
+        for name, justify in (
+            ("name", "left"),
+            ("status", "left"),
+            ("gpu", "left"),
+            ("price/hr", "right"),
+            ("region", "left"),
+            ("id", "right"),
+        ):
+            table.add_column(name, justify=justify)
         for row in rows:
             table.add_row(
                 row.name, row.status, gpu_label(row.gpu, row.count), usd(row.hourly), row.region, row.id
             )
     else:
-        for name in ("gpu", "vram", "price/hr", "region", "offer"):
-            table.add_column(name)
+        for name, justify in (
+            ("gpu", "left"),
+            ("vram", "right"),
+            ("price/hr", "right"),
+            ("region", "left"),
+            ("offer", "right"),
+        ):
+            table.add_column(name, justify=justify)
         for row in sorted_offers(rows, args.sort, args.disk):
             total = row.total(args.disk)
             rate_text = usd(row.hourly, partial=True) if total is None else usd(total)
             table.add_row(
-                gpu_label(row.gpu, row.count), gb(row.vram), rate_text, row.region, row.id
+                gpu_label(row.gpu, row.count),
+                total_vram(row.vram, row.count),
+                rate_text,
+                row.region,
+                row.id,
             )
     console.print(table)
 
@@ -129,6 +148,19 @@ def rent(api, rental: Rental, args):
     return identifier
 
 
+def spawn_background_connect(ident: str) -> None:
+    """Wait for a booting GPU in a detached process and open VS Code once SSH is ready."""
+    subprocess.Popen(
+        [sys.executable, "-m", "cloudrig.cli", "--connect-bg", ident],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=state.child_environment(),
+        start_new_session=True,
+        close_fds=True,
+    )
+
+
 def action(api, item, name: str, args) -> None:
     if name not in {"code", "stop", "destroy"}:
         raise CrigError("Choose code, stop, or destroy. Run crig for the dashboard.")
@@ -139,6 +171,17 @@ def action(api, item, name: str, args) -> None:
         if not connections.has_keypair(item.id):
             _, pub = connections.ensure_keypair(item.id)
             api.attach_ssh_key(item.id, pub)
+        opened, status = connections.try_connect_editor_now(api, item)
+        if opened:
+            console.print(f"Opened {named(item.name, item.id)} in VS Code.", style="crig.ok")
+            return
+        if vault.has_read_key() and isinstance(api, vast.VastClient):
+            spawn_background_connect(item.id)
+            console.print(
+                f"{named(item.name, item.id)}: {status}. Opening VS Code in the background when ready.",
+                style="crig.muted",
+            )
+            return
         with waiting() as progress:
             connections.connect_editor(api, item.id, progress=progress)
         return
@@ -154,37 +197,42 @@ def action(api, item, name: str, args) -> None:
 def dashboard(api, args) -> None:
     from cloudrig.tui import CloudrigApp
 
-    error = None
-    selected_id = None
-    while True:
-        result = CloudrigApp(
-            api,
-            query=args.gpu or "",
-            rented=args.rented,
-            disk=args.disk,
-            count=args.count,
-            sort=args.sort,
-            demo=args.demo,
-            action_error=error,
-            selected_id=selected_id,
-        ).run()
-        if result is None:
-            return
-        error = None
-        try:
-            if isinstance(result, Rental):
-                selected_id = rent(api, result, args)
-            elif isinstance(result, InstanceAction):
-                action(api, result.instance, result.action, args)
-                selected_id = result.instance.id
-        except Cancelled:
-            pass
-        except CrigError as failure:
-            error = str(failure)
-        args.rented = True
+    def run_in_session(result: Rental | InstanceAction) -> tuple[str | None, str | None]:
+        if isinstance(result, Rental):
+            identifier = rent(api, result, args)
+            if args.demo:
+                return None, "Demo only. No GPU was rented."
+            return identifier, f"Rented {named(result.name, identifier or '')}"
+        action(api, result.instance, result.action, args)
+        if args.demo:
+            return result.instance.id, f"Demo: {result.action} {result.instance.name}"
+        if result.action == "code":
+            return result.instance.id, f"Opened {result.instance.name} in VS Code"
+        verb = "Stop" if result.action == "stop" else "Delete"
+        return result.instance.id, f"{verb} requested for {result.instance.name}"
+
+    handoff = spawn_background_connect if (not args.demo and vault.has_read_key()) else None
+    CloudrigApp(
+        api,
+        query=args.gpu or "",
+        rented=args.rented,
+        disk=args.disk,
+        count=args.count,
+        sort=args.sort,
+        demo=args.demo,
+        action_runner=run_in_session,
+        handoff_connect=handoff,
+    ).run()
 
 
 def dispatch(args) -> None:
+    if args.connect_bg:
+        if vault.has_read_key():
+            try:
+                connections.connect_editor(vast.VastClient(), args.connect_bg)
+            except CrigError:
+                pass
+        return
     if args.disk < 1 or args.count < 1:
         raise CrigError("Disk size and GPU count must be positive.")
     if args.words == ["login"]:
