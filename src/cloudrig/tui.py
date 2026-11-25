@@ -497,6 +497,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self._search_timer = None
         self._remote_query = query
         self._base_query = query
+        self._load_gen = 0
         for theme in THEMES:
             self.register_theme(theme)
 
@@ -689,6 +690,10 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
 
     @work(exclusive=True)
     async def load_rows(self):
+        self._load_gen += 1
+        gen = self._load_gen
+        target_rented = self.rented
+        target_query = self.gpu_query
         self.loading = True
         self.loading_more = False
         self.has_more = True
@@ -697,11 +702,14 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         timer = self.set_interval(SPINNER_INTERVAL, self.tick)
         self.tick()
         try:
-            if self.rented:
+            if target_rented:
                 rows = await asyncio.to_thread(self.provider.instances)
             else:
-                self._remote_query = self.gpu_query
-                rows = await asyncio.to_thread(self.provider.offers, self.gpu_query, self.disk, self.count)
+                rows = await asyncio.to_thread(self.provider.offers, target_query, self.disk, self.count)
+            if gen != self._load_gen or self.rented != target_rented:
+                return
+            if not target_rented:
+                self._remote_query = target_query
                 self.has_more = len(rows) >= 200
             self.previous = {row.id: self.price_of(row) for row in self.rows}
             self.rows = rows
@@ -713,9 +721,13 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
                 noun = "instance" if self.rented else "offer"
                 self.notify(f"{count} {noun}{'s' * (count != 1)}", title="Refreshed", timeout=2)
         except CrigError as error:
+            if gen != self._load_gen:
+                return
             self.load_error = str(error)
             self.notify(str(error), title="Could not load", severity="error", timeout=8)
         except Exception:
+            if gen != self._load_gen:
+                return
             self.load_error = "Could not read provider data. Check your login or network, then retry."
             self.notify(
                 self.load_error,
@@ -725,28 +737,46 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             )
         finally:
             timer.stop()
-            self.loading = False
-            self.announce = False
-            self.paint_meta()
-            self.paint_splash()
+            if gen == self._load_gen:
+                self.loading = False
+                self.announce = False
+                self.paint_meta()
+                self.paint_splash()
 
     @work(exclusive=True, group="dynamic-offers")
-    async def fetch_dynamic_offers(self, query: str):
+    async def fetch_dynamic_offers(self, query: str, *, require_gpu_match: bool = False):
+        if self.rented:
+            return
+        if require_gpu_match:
+            matched = await asyncio.to_thread(self.provider.has_gpu_match, query)
+            if not matched or self.rented:
+                return
+        self._load_gen += 1
+        gen = self._load_gen
         self.loading_more = True
         self.paint_meta()
         try:
             rows = await asyncio.to_thread(self.provider.offers, query, self.disk, self.count)
+            if gen != self._load_gen or self.rented:
+                return
             self._remote_query = query
             self.gpu_query = query
             self.has_more = len(rows) >= 200
+            self.load_error = None
             self.previous = {row.id: self.price_of(row) for row in self.rows}
             self.rows = rows
             self.populate()
-        except CrigError:
-            pass
+        except CrigError as error:
+            if gen != self._load_gen or self.rented:
+                return
+            if not self.rows:
+                self.load_error = str(error)
+                self.paint_splash()
+            self.notify(str(error), title="Could not search", severity="error", timeout=6)
         finally:
-            self.loading_more = False
-            self.paint_meta()
+            if gen == self._load_gen:
+                self.loading_more = False
+                self.paint_meta()
 
     @work(exclusive=True, group="load-more")
     async def load_more_offers(self):
@@ -758,6 +788,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         offer_rows = [row for row in self.rows if isinstance(row, Offer)]
         if not offer_rows:
             return
+        gen = self._load_gen
         after_price = max(self.price_of(row) for row in offer_rows)
         self.loading_more = True
         self.paint_meta()
@@ -765,6 +796,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             extra = await asyncio.to_thread(
                 self.provider.more_offers, after_price, self._remote_query, self.disk, self.count
             )
+            if gen != self._load_gen or self.rented:
+                return
             existing = {row.id for row in self.rows}
             added = [row for row in extra if row.id not in existing]
             if not added or len(extra) < 50:
@@ -775,8 +808,9 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         except CrigError:
             pass
         finally:
-            self.loading_more = False
-            self.paint_meta()
+            if gen == self._load_gen:
+                self.loading_more = False
+                self.paint_meta()
 
     def tick(self):
         self.spin += 1
@@ -895,8 +929,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             if self._remote_query != self._base_query:
                 self.fetch_dynamic_offers(self._base_query)
             return
-        if needle != self._remote_query and self.provider.has_gpu_match(needle):
-            self.fetch_dynamic_offers(needle)
+        if needle != self._remote_query:
+            self.fetch_dynamic_offers(needle, require_gpu_match=True)
 
     @on(Input.Submitted, "#search")
     def search_submitted(self):
@@ -904,8 +938,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             self._search_timer.stop()
         needle = self.query_one("#search", Input).value.strip()
         if not self.rented and needle and needle != self._remote_query:
-            if hasattr(self.provider, "has_gpu_match") and self.provider.has_gpu_match(needle):
-                self.fetch_dynamic_offers(needle)
+            if hasattr(self.provider, "has_gpu_match"):
+                self.fetch_dynamic_offers(needle, require_gpu_match=True)
             elif not self.visible_rows:
                 self.gpu_query = needle
                 self.load_rows()
@@ -1118,7 +1152,15 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         rented = view == "instances"
         if rented == self.rented or len(self.screen_stack) > 1:
             return
+        if self._search_timer is not None:
+            self._search_timer.stop()
+        self._load_gen += 1
+        self.workers.cancel_group(self, "dynamic-offers")
+        self.workers.cancel_group(self, "load-more")
         self.rented = rented
+        self.loading_more = False
+        self.gpu_query = self._base_query
+        self._remote_query = self._base_query
         self.rows, self.visible_rows, self.previous = [], [], {}
         self.selected_id = None
         self.query_one("#search", Input).value = ""

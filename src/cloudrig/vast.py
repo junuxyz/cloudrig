@@ -331,22 +331,24 @@ class VastClient:
         if min_price is not None:
             return self._query_bundles(token, payload, disk)
 
-        # Initial load: fetch cheapest offers + high-VRAM GPUs + GPU name list in parallel (~2s total).
+        # Initial load: fetch cheapest offers + high-VRAM GPUs in parallel (2 requests avoids 429s).
         cheap_payload = {**payload, "limit": 200}
         vram_payload = {**payload, "gpu_ram": {"gte": 40000}, "limit": 150}
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             cheap_fut = pool.submit(self._query_bundles, token, cheap_payload, disk)
             vram_fut = pool.submit(self._query_bundles, token, vram_payload, disk)
-            names_fut = pool.submit(self._ensure_gpu_names, token)
-            cheap_rows = cheap_fut.result()
+            cheap_err: CrigError | None = None
+            try:
+                cheap_rows = cheap_fut.result()
+            except CrigError as error:
+                cheap_rows = []
+                cheap_err = error
             try:
                 vram_rows = vram_fut.result()
             except CrigError:
+                if cheap_err is not None:
+                    raise cheap_err from None
                 vram_rows = []
-            try:
-                names_fut.result()
-            except CrigError:
-                pass
         seen: dict[str, Offer] = {}
         for row in (*cheap_rows, *vram_rows):
             seen.setdefault(row.id, row)
