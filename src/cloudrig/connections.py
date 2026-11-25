@@ -3,9 +3,12 @@
 import ipaddress
 import math
 import re
+import secrets
 import shutil
+import socket
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from filelock import FileLock
@@ -53,6 +56,40 @@ def alias(ident: str) -> str:
 def has_keypair(ident: str) -> bool:
     private = key_path(ident)
     return private.is_file() and private.with_suffix(".pub").is_file()
+
+
+def create_temp_keypair() -> tuple[Path, str]:
+    """Generate a throwaway ed25519 keypair before an instance ID is assigned."""
+    private = managed_dir() / f".pending_{secrets.token_hex(8)}"
+    public = private.with_suffix(".pub")
+    result = run_quietly(
+        [require("ssh-keygen"), "-q", "-t", "ed25519", "-N", "", "-C", "cloudrig", "-f", str(private)]
+    )
+    if result.returncode:
+        private.unlink(missing_ok=True)
+        public.unlink(missing_ok=True)
+        raise CrigError("Could not generate an SSH key for this GPU.")
+    private.chmod(0o600)
+    pub = public.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+ [A-Za-z0-9_.-]+", pub):
+        private.unlink(missing_ok=True)
+        public.unlink(missing_ok=True)
+        raise CrigError("Generated SSH public key had an unexpected format.")
+    return private, pub
+
+
+def bind_temp_keypair(temp_private: Path, ident: str) -> Path:
+    """Rename a pending keypair to its assigned instance ID."""
+    target = key_path(ident)
+    temp_private.replace(target)
+    temp_private.with_suffix(".pub").replace(target.with_suffix(".pub"))
+    target.chmod(0o600)
+    return target
+
+
+def discard_temp_keypair(temp_private: Path) -> None:
+    temp_private.unlink(missing_ok=True)
+    temp_private.with_suffix(".pub").unlink(missing_ok=True)
 
 
 def ensure_keypair(ident: str) -> tuple[Path, str]:
@@ -174,21 +211,52 @@ def _endpoints(item: Instance) -> list[tuple[str, int, bool]]:
     return result
 
 
-def ssh_ready(ident: str, host: str, port: int, user: str, timeout: float) -> bool:
-    name = install_alias(ident, host, port, user)
-    config = managed_dir() / "config"
+def _tcp_ssh_banner(host: str, port: int, timeout: float = 2.0) -> bool:
+    """Fast TCP check: returns True only once sshd actually sends its SSH-2.0 banner."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            banner = sock.recv(64)
+            return banner.startswith(b"SSH-")
+    except OSError:
+        return False
+
+
+def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> tuple[bool, bool]:
+    """Return (port_open, auth_ok) for one endpoint without touching ~/.ssh/cloudrig/config."""
+    if not _tcp_ssh_banner(host, port, timeout=min(2.0, timeout)):
+        return False, False
+    private, _ = ensure_keypair(ident)
+    known = known_hosts_path(ident)
+    name = alias(ident)
     try:
         result = subprocess.run(
             [
                 require("ssh"),
                 "-F",
-                str(config),
+                "/dev/null",
+                "-i",
+                str(private),
+                "-p",
+                str(port),
+                "-o",
+                "IdentitiesOnly=yes",
                 "-o",
                 "BatchMode=yes",
                 "-o",
+                "PasswordAuthentication=no",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                f"HostKeyAlias={name}",
+                "-o",
+                f"UserKnownHostsFile={known}",
+                "-o",
                 f"ConnectTimeout={max(1, math.ceil(timeout))}",
                 "-T",
-                name,
+                f"{user}@{host}",
                 "true",
             ],
             stdin=subprocess.DEVNULL,
@@ -200,12 +268,17 @@ def ssh_ready(ident: str, host: str, port: int, user: str, timeout: float) -> bo
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return False
+        return True, False
     if result.returncode == 0:
-        return True
+        return True, True
     if "remote host identification has changed" in result.stderr.lower():
         raise CrigError("SSH host key changed for this GPU. Inspect it before reconnecting.")
-    return False
+    return True, False
+
+
+def ssh_ready(ident: str, host: str, port: int, user: str, timeout: float) -> bool:
+    _, auth_ok = _probe_ssh(ident, host, port, user, timeout)
+    return auth_ok
 
 
 def open_code(ident: str, remote_path: str = "/workspace") -> None:
@@ -225,46 +298,76 @@ def connect_editor(api, identifier: str, timeout: float = 300, progress=None) ->
         progress(stage)
 
     attached = has_keypair(identifier)
-    while time.monotonic() < deadline:
-        try:
-            item = api.instance(identifier)
-        except RateLimited as error:
-            stage = f"Vast.ai request limit reached. Checking again in {error.seconds}s"
-            if progress:
-                progress(stage)
-            time.sleep(min(error.seconds, max(0, deadline - time.monotonic())))
-            continue
+    cached_item: Instance | None = None
+    last_refresh = 0.0
 
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        # Once running with known endpoints, avoid paying a ~0.8s Vast.ai API round-trip every poll.
+        needs_refresh = (
+            cached_item is None
+            or cached_item.status != "running"
+            or not _endpoints(cached_item)
+            or now - last_refresh >= 15
+        )
+        if needs_refresh:
+            try:
+                cached_item = api.instance(identifier)
+                last_refresh = time.monotonic()
+            except RateLimited as error:
+                stage = f"Vast.ai request limit reached. Checking again in {error.seconds}s"
+                if progress:
+                    progress(stage)
+                time.sleep(min(error.seconds, max(0, deadline - time.monotonic())))
+                continue
+
+        item = cached_item
         if item.status in {"stopped", "exited", "failed", "error", "terminated"}:
             raise CrigError(f"Instance {identifier} is {item.status}. Choose a running GPU.")
         if item.status != "running":
-            stage = f"GPU is {item.status}. Waiting for startup"
-        else:
-            if not attached:
-                if progress:
-                    progress("Attaching SSH key")
-                _, pub = ensure_keypair(identifier)
-                api.attach_ssh_key(identifier, pub)
-                attached = True
-            endpoints = _endpoints(item)
-            if not endpoints:
-                stage = "Waiting for the GPU's SSH address"
-            else:
-                stage = "Waiting for the GPU to accept SSH login"
-                if progress:
-                    progress(stage)
-                for host, port, direct in endpoints:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    if ssh_ready(item.id, host, port, item.user, min(8, remaining)):
-                        if progress:
-                            progress("Opening VS Code" if direct else "Opening VS Code through Vast.ai proxy")
-                        open_code(item.id)
-                        return
+            stage = f"GPU is {item.status}. Waiting for container startup"
+            if progress:
+                progress(stage)
+            time.sleep(min(2.0, max(0, deadline - time.monotonic())))
+            continue
+
+        if not attached:
+            if progress:
+                progress("Attaching SSH key")
+            _, pub = ensure_keypair(identifier)
+            api.attach_ssh_key(identifier, pub)
+            attached = True
+
+        endpoints = _endpoints(item)
+        if not endpoints:
+            stage = "Waiting for the GPU's SSH address"
+            if progress:
+                progress(stage)
+            time.sleep(min(1.5, max(0, deadline - time.monotonic())))
+            continue
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        probe_timeout = min(4.0, remaining)
+        # Probe direct and proxy endpoints concurrently; prefer direct when both succeed.
+        with ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
+            futures = [
+                (host, port, direct, pool.submit(ssh_ready, item.id, host, port, item.user, probe_timeout))
+                for host, port, direct in endpoints
+            ]
+            for host, port, direct, fut in futures:
+                if fut.result():
+                    install_alias(item.id, host, port, item.user)
+                    if progress:
+                        progress("Opening VS Code" if direct else "Opening VS Code through Vast.ai proxy")
+                    open_code(item.id)
+                    return
+
+        stage = "Waiting for the GPU to accept SSH login"
         if progress:
             progress(stage)
-        time.sleep(min(5, max(0, deadline - time.monotonic())))
+        time.sleep(min(1.0, max(0, deadline - time.monotonic())))
 
     raise CrigError(
         f"{stage}. Instance {identifier} is still rented. "

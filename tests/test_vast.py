@@ -151,6 +151,8 @@ def test_offers_instances_rent_stop_destroy_and_key_separation(monkeypatch):
             return 200, {"instances": [instance_row]}, None
         if method == "PUT" and path == "/api/v0/asks/1001/":
             assert auth == "Bearer action-tok"
+            assert "ssh-ed25519 " in body["onstart"]
+            assert "/root/.ssh/authorized_keys" in body["onstart"]
             return 200, {"success": True, "new_contract": 777}, None
         if method == "POST" and path == "/api/v0/instances/777/ssh/":
             assert auth == "Bearer action-tok"

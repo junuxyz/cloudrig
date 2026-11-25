@@ -410,28 +410,43 @@ class VastClient:
         )
         action_key = vault.unlock_action_key(summary)
 
-        result = api_call(
-            "PUT",
-            f"/api/v0/asks/{quote(rental.offer.id, safe='')}/",
-            action_key,
-            {
-                "client_id": "me",
-                "image": rental.image,
-                "disk": rental.disk,
-                "label": rental.name,
-                "runtype": "ssh_direc ssh_proxy",
-                "cancel_unavail": True,
-            },
-            base_url=self.base_url,
+        # Generate the throwaway SSH key before creation so onstart injects it immediately at boot,
+        # avoiding Vast.ai's 60-120s async POST /ssh/ control-plane sync delay.
+        temp_key, pub_key = connections.create_temp_keypair()
+        onstart = (
+            "mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
+            f"printf '%s\\n' '{pub_key}' >> /root/.ssh/authorized_keys && "
+            "chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh"
         )
+        try:
+            result = api_call(
+                "PUT",
+                f"/api/v0/asks/{quote(rental.offer.id, safe='')}/",
+                action_key,
+                {
+                    "client_id": "me",
+                    "image": rental.image,
+                    "disk": rental.disk,
+                    "label": rental.name,
+                    "runtype": "ssh_direc ssh_proxy",
+                    "onstart": onstart,
+                    "cancel_unavail": True,
+                },
+                base_url=self.base_url,
+            )
+        except Exception:
+            connections.discard_temp_keypair(temp_key)
+            raise
+
         new_id = _text((result or {}).get("new_contract"))
         if not new_id:
+            connections.discard_temp_keypair(temp_key)
             raise CrigError("Rental outcome is unclear. Check crig --rented before trying again.")
 
-        # Attach a fresh throwaway SSH key right away while the action key is in memory,
-        # so opening VS Code afterwards needs no second PIN.
+        connections.bind_temp_keypair(temp_key, new_id)
+
+        # Also register the key with Vast.ai's API so proxy SSH works if direct SSH is blocked.
         try:
-            _, pub_key = connections.ensure_keypair(new_id)
             api_call(
                 "POST",
                 f"/api/v0/instances/{quote(new_id, safe='')}/ssh/",
