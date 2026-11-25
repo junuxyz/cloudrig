@@ -224,11 +224,12 @@ def _tcp_ssh_banner(host: str, port: int, timeout: float = 2.0) -> bool:
 
 def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> tuple[bool, bool]:
     """Return (port_open, auth_ok) for one endpoint without touching ~/.ssh/cloudrig/config."""
-    if not _tcp_ssh_banner(host, port, timeout=min(2.0, timeout)):
+    if not _tcp_ssh_banner(host, port, timeout=min(2.5, timeout)):
         return False, False
     private, _ = ensure_keypair(ident)
     known = known_hosts_path(ident)
     name = alias(ident)
+    connect_timeout = max(2, min(5, math.ceil(timeout)))
     try:
         result = subprocess.run(
             [
@@ -242,6 +243,10 @@ def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> t
                 "-o",
                 "IdentitiesOnly=yes",
                 "-o",
+                "PreferredAuthentications=publickey",
+                "-o",
+                "GSSAPIAuthentication=no",
+                "-o",
                 "BatchMode=yes",
                 "-o",
                 "PasswordAuthentication=no",
@@ -254,7 +259,7 @@ def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> t
                 "-o",
                 f"UserKnownHostsFile={known}",
                 "-o",
-                f"ConnectTimeout={max(1, math.ceil(timeout))}",
+                f"ConnectTimeout={connect_timeout}",
                 "-T",
                 f"{user}@{host}",
                 "true",
@@ -264,7 +269,7 @@ def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> t
             stderr=subprocess.PIPE,
             text=True,
             env=child_environment(),
-            timeout=timeout,
+            timeout=max(8.0, timeout),
             check=False,
         )
     except subprocess.TimeoutExpired:
