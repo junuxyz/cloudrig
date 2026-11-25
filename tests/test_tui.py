@@ -219,3 +219,13 @@ async def test_loading_instance_animates_braille_spinner():
         await pilot.pause(0.2)
         second = str(app.query_one(DataTable).get_cell("i-1", "status"))
         assert second.endswith(" loading") and second[0] in SPINNER and second != first
+
+
+async def test_header_shows_remaining_budget_and_runway():
+    app = CloudrigApp(Demo(), rented=True, demo=True)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        header = str(app.query_one("#provider", Static).render())
+        assert "balance $18.50" in header
+        assert ") until $0" in header

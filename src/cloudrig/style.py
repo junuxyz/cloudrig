@@ -1,5 +1,7 @@
 """Visual tokens and display formats shared by the dashboard and the CLI. See docs/design-system.md."""
 
+from datetime import datetime, timedelta
+
 from rich.theme import Theme as RichTheme
 from textual.app import App
 from textual.color import Color
@@ -169,3 +171,30 @@ def named(name: str, identifier: str) -> str:
 
 def provider_label(provider: str) -> str:
     return PROVIDER_LABELS[provider]
+
+
+def runway(hours: float, *, now: datetime | None = None, include_eta: bool = True) -> str:
+    """Format remaining runway before balance reaches $0, optionally with local ETA."""
+    if hours <= 0:
+        return "0m until $0"
+    total_minutes = int(hours * 60)
+    if total_minutes < 1:
+        duration = "<1m"
+    elif total_minutes < 60:
+        duration = f"~{total_minutes}m"
+    elif hours < 48:
+        h, m = divmod(total_minutes, 60)
+        duration = f"~{h}h {m}m" if m else f"~{h}h"
+    elif hours < 24 * 60:
+        days, rem_h = divmod(int(hours), 24)
+        duration = f"~{days}d {rem_h}h" if rem_h else f"~{days}d"
+    else:
+        duration = ">60d"
+
+    if not include_eta or hours >= 24 * 60:
+        return f"{duration} until $0"
+
+    current = now or datetime.now()
+    eta = current + timedelta(hours=hours)
+    when = f"{eta.strftime('%b')} {eta.day}, {eta.strftime('%H:%M')}"
+    return f"{duration} ({when}) until $0"

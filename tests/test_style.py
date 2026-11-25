@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from textual.color import Color
 
@@ -95,3 +97,13 @@ def test_plain_tables_use_dashboard_columns(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["crig", "--rented", "--plain", "--demo"])
     cli.main()
     assert capsys.readouterr().out.split()[:6] == ["name", "status", "gpu", "price/hr", "region", "id"]
+
+
+def test_runway_formats_duration_and_zero_dollar_eta():
+    anchor = datetime(2026, 11, 25, 14, 0)
+    assert style.runway(0, now=anchor) == "0m until $0"
+    assert style.runway(0.5, now=anchor) == "~30m (Nov 25, 14:30) until $0"
+    assert style.runway(12.5, now=anchor) == "~12h 30m (Nov 26, 02:30) until $0"
+    assert style.runway(12.5, now=anchor, include_eta=False) == "~12h 30m until $0"
+    assert style.runway(24 * 10, now=anchor) == "~10d (Dec 5, 14:00) until $0"
+    assert style.runway(24 * 90, now=anchor) == ">60d until $0"

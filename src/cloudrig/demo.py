@@ -141,3 +141,6 @@ class Demo:
 
     def instance(self, identifier: str) -> Instance:
         return next(row for row in self.instances() if row.id == identifier)
+
+    def balance(self) -> float:
+        return 18.50

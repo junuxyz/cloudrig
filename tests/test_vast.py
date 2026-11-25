@@ -264,3 +264,16 @@ def test_offers_pagination_and_short_429_auto_retry(monkeypatch):
         assert not client.has_gpu_match("tokyo")
         extra = client.more_offers(after_price=0.20)
         assert [row.id for row in extra] == ["303"]
+
+
+def test_balance_reads_net_credit():
+    vault.save_keys("read-tok", "action-tok", "5678", scoped=True)
+
+    def handle(method, path, auth, body):
+        assert method == "GET" and path == "/api/v0/users/current/"
+        assert auth == "Bearer read-tok"
+        return 200, {"credit": 8.21, "balance": -0.21}, None
+
+    with FakeVastServer(handle) as server:
+        client = vast.VastClient(base_url=server.base_url)
+        assert client.balance() == pytest.approx(8.0)

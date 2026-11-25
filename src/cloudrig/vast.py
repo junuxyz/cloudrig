@@ -265,6 +265,7 @@ class VastClient:
         self._gpu_names: list[str] | None = None
         self._instances_cache: tuple[float, list[Instance]] | None = None
         self._offers_cache: dict[tuple, tuple[float, list[Offer]]] = {}
+        self._balance_cache: tuple[float, float] | None = None
 
     def _read_token(self) -> str:
         if vault.has_read_key():
@@ -382,6 +383,21 @@ class VastClient:
                 raise CrigError("Vast.ai returned an invalid pagination cursor.")
             seen.add(next_token)
             cursor = next_token
+
+    def balance(self, *, fresh: bool = False) -> float:
+        if not fresh and self._balance_cache and time.monotonic() - self._balance_cache[0] < 30.0:
+            return self._balance_cache[1]
+        token = self._read_token()
+        result = api_call(
+            "GET", "/api/v0/users/current/", token, base_url=self.base_url, retry_short_429=True
+        )
+        if not isinstance(result, dict) or result.get("credit") is None:
+            raise CrigError("Vast.ai did not return account balance.")
+        credit = _num(result.get("credit")) + _num(result.get("balance"))
+        number(max(0.0, credit))
+        remaining = max(0.0, credit)
+        self._balance_cache = (time.monotonic(), remaining)
+        return remaining
 
     def instance(self, identifier: str) -> Instance:
         for row in self.instances():

@@ -26,6 +26,7 @@ from cloudrig.style import (
     per_hour,
     per_month,
     provider_label,
+    runway,
     status_style,
     usd,
 )
@@ -489,6 +490,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self._remote_query = query
         self._base_query = query
         self._load_gen = 0
+        self.budget: float | None = None
+        self._burn_hourly: float | None = None
         for theme in THEMES:
             self.register_theme(theme)
 
@@ -530,9 +533,29 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.apply_layout()
         self.query_one(DataTable).focus()
         self.load_rows()
+        self.load_budget()
         self.paint_error()
         if not self.demo:
             self.set_interval(10, self._poll_booting_instances)
+
+    @work(exclusive=True, group="budget")
+    async def load_budget(self, *, fresh: bool = False):
+        if not hasattr(self.provider, "balance"):
+            return
+        try:
+            if fresh and hasattr(self.provider, "_balance_cache"):
+                amount = await asyncio.to_thread(self.provider.balance, fresh=True)
+            else:
+                amount = await asyncio.to_thread(self.provider.balance)
+            self.budget = amount
+            if self._burn_hourly is None and not self.rented:
+                instances = await asyncio.to_thread(self.provider.instances)
+                self._burn_hourly = sum(
+                    row.hourly for row in instances if row.status not in {"terminated", "deleted"}
+                )
+            self.paint_chrome()
+        except CrigError:
+            pass
 
     def _poll_booting_instances(self):
         if (
@@ -553,6 +576,10 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
                 return
             self.previous = {row.id: self.price_of(row) for row in self.rows}
             self.rows = rows
+            self._burn_hourly = sum(
+                row.hourly for row in rows if row.status not in {"terminated", "deleted"}
+            )
+            self.paint_chrome()
             self.populate()
         except CrigError:
             pass
@@ -635,7 +662,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.query_one("#statusbar").styles.height = 2 if compact else 3
         self.query_one("#statusbar").styles.padding = (1, side, 0 if compact else 1, side)
         self.query_one("#searchbar").styles.margin = (1, 0, 0, 0) if compact else (2, 0, 1, 0)
-        self.paint_status()
+        self.paint_chrome()
         self.update_inspector()
         self.paint_splash()
 
@@ -644,9 +671,30 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
 
     def paint_chrome(self):
         colors = palette(self)
-        provider = Text(provider_label(self.provider.name), style=colors["ink-2"])
-        if self.demo:
-            provider.append("   demo", style=colors["accent"])
+        provider = Text(no_wrap=True)
+        if self.budget is not None:
+            burn = self._burn_hourly or 0.0
+            hours = self.budget / burn if burn > 0 else None
+            budget_color = (
+                colors["error"]
+                if self.budget <= 0
+                else colors["warning"]
+                if self.budget < 1.0 or (hours is not None and hours < 2.0)
+                else colors["ink"]
+            )
+            provider.append("balance ", style=colors["ink-3"])
+            provider.append(usd(self.budget, digits=2), style=budget_color)
+            if hours is not None:
+                provider.append(
+                    f"   {runway(hours, include_eta=not self.narrow)}",
+                    style=colors["warning"] if hours < 2.0 else colors["ink-2"],
+                )
+            if self.demo and not self.narrow:
+                provider.append("   demo", style=colors["accent"])
+        else:
+            provider.append(provider_label(self.provider.name), style=colors["ink-2"])
+            if self.demo:
+                provider.append("   demo", style=colors["accent"])
         self.query_one("#provider", Static).update(provider)
         for tab in self.query(Tab):
             tab.set_class((tab.view == "instances") == self.rented, "-active")
@@ -740,7 +788,12 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
                 rows = await asyncio.to_thread(self.provider.offers, target_query, self.disk, self.count)
             if gen != self._load_gen or self.rented != target_rented:
                 return
-            if not target_rented:
+            if target_rented:
+                self._burn_hourly = sum(
+                    row.hourly for row in rows if row.status not in {"terminated", "deleted"}
+                )
+                self.paint_chrome()
+            else:
                 self._remote_query = target_query
                 self.has_more = len(rows) >= 200
             self.previous = {row.id: self.price_of(row) for row in self.rows}
@@ -1163,6 +1216,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
     def action_refresh(self):
         self.announce = True
         self.load_rows()
+        self.load_budget(fresh=True)
 
     def action_help(self):
         if len(self.screen_stack) == 1:
