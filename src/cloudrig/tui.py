@@ -532,7 +532,30 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.load_rows()
         self.paint_error()
         if not self.demo:
-            self.set_interval(30, lambda: self.load_rows() if self.rented and not self.loading else None)
+            self.set_interval(10, self._poll_booting_instances)
+
+    def _poll_booting_instances(self):
+        if (
+            self.rented
+            and not self.loading
+            and not self.loading_more
+            and len(self.screen_stack) == 1
+            and any(isinstance(row, Instance) and is_transitional(row.status) for row in self.rows)
+        ):
+            self.refresh_instances_silently()
+
+    @work(exclusive=True, group="silent-refresh")
+    async def refresh_instances_silently(self):
+        gen = self._load_gen
+        try:
+            rows = await asyncio.to_thread(self.provider.instances)
+            if gen != self._load_gen or not self.rented or self.loading:
+                return
+            self.previous = {row.id: self.price_of(row) for row in self.rows}
+            self.rows = rows
+            self.populate()
+        except CrigError:
+            pass
 
     def paint_error(self):
         if not self.query("#action-feedback"):
@@ -1168,6 +1191,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self._load_gen += 1
         self.workers.cancel_group(self, "dynamic-offers")
         self.workers.cancel_group(self, "load-more")
+        self.workers.cancel_group(self, "silent-refresh")
         self.rented = rented
         self.loading_more = False
         self.gpu_query = self._base_query
