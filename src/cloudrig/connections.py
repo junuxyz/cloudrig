@@ -18,6 +18,9 @@ from cloudrig.models import CrigError, Instance, RateLimited, instance_id, safe_
 from cloudrig.state import atomic_write, child_environment, private_dir
 from cloudrig.terminal import run_quietly
 
+# The remote folder VS Code opens.
+WORKSPACE = "/workspace"
+
 
 def require(binary: str) -> str:
     path = shutil.which(binary)
@@ -263,7 +266,8 @@ def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> t
                 f"ConnectTimeout={connect_timeout}",
                 "-T",
                 f"{user}@{host}",
-                "true",
+                # Many images (pytorch/pytorch, some vastai/* tags) ship without the folder VS Code opens.
+                f"mkdir -p {WORKSPACE} || true",
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -287,7 +291,7 @@ def ssh_ready(ident: str, host: str, port: int, user: str, timeout: float) -> bo
     return auth_ok
 
 
-def open_code(ident: str, remote_path: str = "/workspace") -> None:
+def open_code(ident: str, remote_path: str = WORKSPACE) -> None:
     if not remote_path.startswith("/") or any(ord(c) < 32 for c in remote_path):
         raise CrigError("Use an absolute remote workspace path, for example /workspace.")
     result = run_quietly(

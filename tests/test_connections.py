@@ -100,3 +100,19 @@ def test_connect_editor_honors_cancel_event(monkeypatch):
     cancel = threading.Event()
     cancel.set()
     assert connections.connect_editor(LoadingAPI(), "777", timeout=30, cancel=cancel) is False
+
+
+def test_ssh_probe_creates_the_workspace_vs_code_opens(monkeypatch):
+    commands = []
+
+    class Done:
+        returncode = 0
+        stderr = ""
+
+    connections.ensure_keypair("9002")
+    monkeypatch.setattr(connections, "require", lambda binary: binary)
+    monkeypatch.setattr(connections, "_tcp_ssh_banner", lambda host, port, timeout: True)
+    monkeypatch.setattr(connections.subprocess, "run", lambda args, **kw: commands.append(args) or Done())
+    assert connections.ssh_ready("9002", "203.0.113.10", 22022, "root", 3.0)
+    assert commands[0][-1] == f"mkdir -p {connections.WORKSPACE} || true"
+    connections.cleanup_instance("9002")
