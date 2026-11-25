@@ -22,10 +22,6 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.
 
 ```text
 <type>(<optional scope>): <summary>
-
-<optional body>
-
-<optional footer>
 ```
 
 | Type       | Use for                                                        |
@@ -45,6 +41,6 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.
 - **Summary:** imperative mood, lowercase, no trailing period, at most 72 characters (`fix: show new rentals as loading`, not `Fixed the status bug.`).
 - **Scope:** optional, names the area touched: `tui`, `cli`, `vast`, `vault`, `connections`, `style`.
 - **One change per commit.** If the summary needs "and", split the commit. Tests and docs for a change ride in the same commit as the change.
-- **Body:** explains why, not what. Wrap at 72 characters.
-- **Breaking changes:** add `!` after the type (`feat(cli)!: rename --rented to --instances`) and a `BREAKING CHANGE:` footer describing the migration.
+- **One line only.** No body or footer. Longer context goes in the pull request description.
+- **Breaking changes:** add `!` after the type (`feat(cli)!: rename --rented to --instances`) and describe the migration in the pull request.
 - **Pull request titles** follow the same format, so a squash merge produces a valid commit.
