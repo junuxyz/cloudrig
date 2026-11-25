@@ -2,7 +2,9 @@
 
 import json
 import os
+import pty
 import stat
+import threading
 
 import pytest
 
@@ -70,6 +72,33 @@ def test_saving_unscoped_key_removes_stale_read_key():
     vault.save_keys(None, "new-only-action", "2222", scoped=False)
     assert not vault.has_read_key()
     assert vault.has_credentials()
+
+
+def test_read_tty_secret_works_on_real_pty():
+    master, slave = pty.openpty()
+    slave_name = os.ttyname(slave)
+    captured = bytearray()
+
+    def writer():
+        while b"PIN: " not in captured:
+            chunk = os.read(master, 1024)
+            if not chunk:
+                break
+            captured.extend(chunk)
+        os.write(master, b"secret-pin\n")
+
+    thread = threading.Thread(target=writer, daemon=True)
+    thread.start()
+    try:
+        entered = vault.read_tty_secret("PIN: ", header="RENT 4090\n", tty_path=slave_name)
+    finally:
+        thread.join(timeout=2)
+        os.close(slave)
+        os.close(master)
+
+    assert entered == "secret-pin"
+    assert b"RENT 4090" in captured
+    assert b"secret-pin" not in captured  # Echo stayed disabled.
 
 
 def test_clear_keys_removes_both_files():

@@ -74,36 +74,39 @@ def decrypt_secret(envelope: dict, pin: str) -> str:
     return plaintext.decode("utf-8")
 
 
-def read_tty_secret(prompt: str, *, header: str = "") -> str:
+def read_tty_secret(prompt: str, *, header: str = "", tty_path: str = "/dev/tty") -> str:
     """Read a secret directly from /dev/tty so piped stdin or non-TTY tools cannot bypass it."""
     try:
-        fd = os.open("/dev/tty", os.O_RDWR)
+        fd = os.open(tty_path, os.O_RDWR | os.O_NOCTTY)
     except OSError as error:
         raise CrigError("Run this command in your own terminal to confirm with your PIN.") from error
 
+    buf = bytearray()
     try:
-        with os.fdopen(fd, "r+", encoding="utf-8", buffering=1) as tty:
+        saved = termios.tcgetattr(fd)
+        hidden = list(saved)
+        hidden[3] = hidden[3] & ~termios.ECHO
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, hidden)
             if header:
-                tty.write(header)
-                tty.flush()
-            tty.write(prompt)
-            tty.flush()
-            saved = termios.tcgetattr(tty.fileno())
-            hidden = list(saved)
-            hidden[3] = hidden[3] & ~termios.ECHO
-            try:
-                termios.tcsetattr(tty.fileno(), termios.TCSADRAIN, hidden)
-                line = tty.readline()
-            finally:
-                termios.tcsetattr(tty.fileno(), termios.TCSADRAIN, saved)
-                tty.write("\n")
-                tty.flush()
+                os.write(fd, header.encode("utf-8"))
+            os.write(fd, prompt.encode("utf-8"))
+            while True:
+                chunk = os.read(fd, 1)
+                if not chunk or chunk in (b"\n", b"\r"):
+                    break
+                buf.extend(chunk)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+            os.write(fd, b"\n")
     except (OSError, termios.error) as error:
         raise CrigError("Terminal input is unavailable. Run this command in your own terminal.") from error
+    finally:
+        os.close(fd)
 
-    if not line:
+    if not chunk and not buf:
         raise Cancelled("Cancelled.")
-    return line.rstrip("\r\n")
+    return buf.decode("utf-8", errors="replace")
 
 
 def has_credentials() -> bool:
