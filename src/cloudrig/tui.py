@@ -485,6 +485,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.rows: list[Offer | Instance] = []
         self.visible_rows: list[Offer | Instance] = []
         self.loading = False
+        self.loading_more = False
+        self.has_more = True
         self.load_error: str | None = None
         self.spin = 0
         self.table_narrow = False
@@ -492,6 +494,9 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.action_error = action_error
         self.announce = False
         self.previous: dict[str, float] = {}
+        self._search_timer = None
+        self._remote_query = query
+        self._base_query = query
         for theme in THEMES:
             self.register_theme(theme)
 
@@ -685,6 +690,8 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
     @work(exclusive=True)
     async def load_rows(self):
         self.loading = True
+        self.loading_more = False
+        self.has_more = True
         self.load_error = None
         self.spin = 0
         timer = self.set_interval(SPINNER_INTERVAL, self.tick)
@@ -693,7 +700,9 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             if self.rented:
                 rows = await asyncio.to_thread(self.provider.instances)
             else:
+                self._remote_query = self.gpu_query
                 rows = await asyncio.to_thread(self.provider.offers, self.gpu_query, self.disk, self.count)
+                self.has_more = len(rows) >= 200
             self.previous = {row.id: self.price_of(row) for row in self.rows}
             self.rows = rows
             timer.stop()
@@ -709,7 +718,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         except Exception:
             self.load_error = "Could not read provider data. Check your login or network, then retry."
             self.notify(
-                "Details withheld to protect credentials.",
+                self.load_error,
                 title="Could not load",
                 severity="error",
                 timeout=8,
@@ -720,6 +729,54 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             self.announce = False
             self.paint_meta()
             self.paint_splash()
+
+    @work(exclusive=True, group="dynamic-offers")
+    async def fetch_dynamic_offers(self, query: str):
+        self.loading_more = True
+        self.paint_meta()
+        try:
+            rows = await asyncio.to_thread(self.provider.offers, query, self.disk, self.count)
+            self._remote_query = query
+            self.gpu_query = query
+            self.has_more = len(rows) >= 200
+            self.previous = {row.id: self.price_of(row) for row in self.rows}
+            self.rows = rows
+            self.populate()
+        except CrigError:
+            pass
+        finally:
+            self.loading_more = False
+            self.paint_meta()
+
+    @work(exclusive=True, group="load-more")
+    async def load_more_offers(self):
+        if self.loading or self.loading_more or not self.has_more or self.rented:
+            return
+        if not hasattr(self.provider, "more_offers"):
+            self.has_more = False
+            return
+        offer_rows = [row for row in self.rows if isinstance(row, Offer)]
+        if not offer_rows:
+            return
+        after_price = max(self.price_of(row) for row in offer_rows)
+        self.loading_more = True
+        self.paint_meta()
+        try:
+            extra = await asyncio.to_thread(
+                self.provider.more_offers, after_price, self._remote_query, self.disk, self.count
+            )
+            existing = {row.id for row in self.rows}
+            added = [row for row in extra if row.id not in existing]
+            if not added or len(extra) < 50:
+                self.has_more = False
+            if added:
+                self.rows = [*self.rows, *added]
+                self.populate()
+        except CrigError:
+            pass
+        finally:
+            self.loading_more = False
+            self.paint_meta()
 
     def tick(self):
         self.spin += 1
@@ -800,7 +857,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             return
         colors = palette(self)
         text = Text(no_wrap=True)
-        if self.loading:
+        if self.loading or self.loading_more:
             text.append("loading", style=colors["ink-3"])
         elif self.rented:
             running = [row for row in self.visible_rows if row.status == "running"]
@@ -824,19 +881,44 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
     @on(Input.Changed, "#search")
     def filter_changed(self):
         self.populate()
+        if self.rented or not hasattr(self.provider, "has_gpu_match"):
+            return
+        if self._search_timer is not None:
+            self._search_timer.stop()
+        self._search_timer = self.set_timer(0.35, self._maybe_dynamic_search)
+
+    def _maybe_dynamic_search(self):
+        if self.rented or self.loading or not hasattr(self.provider, "has_gpu_match"):
+            return
+        needle = self.query_one("#search", Input).value.strip()
+        if not needle:
+            if self._remote_query != self._base_query:
+                self.fetch_dynamic_offers(self._base_query)
+            return
+        if needle != self._remote_query and self.provider.has_gpu_match(needle):
+            self.fetch_dynamic_offers(needle)
 
     @on(Input.Submitted, "#search")
     def search_submitted(self):
+        if self._search_timer is not None:
+            self._search_timer.stop()
         needle = self.query_one("#search", Input).value.strip()
-        if not self.rented and needle and not self.visible_rows and needle != self.gpu_query:
-            self.gpu_query = needle
-            self.load_rows()
+        if not self.rented and needle and needle != self._remote_query:
+            if hasattr(self.provider, "has_gpu_match") and self.provider.has_gpu_match(needle):
+                self.fetch_dynamic_offers(needle)
+            elif not self.visible_rows:
+                self.gpu_query = needle
+                self.load_rows()
         self.query_one(DataTable).focus()
 
     @on(DataTable.RowHighlighted)
     def highlight(self):
         self.remember_cursor()
         self.update_inspector()
+        if not self.rented and self.has_more and not self.loading_more and self.visible_rows:
+            table = self.query_one(DataTable)
+            if table.cursor_row >= len(self.visible_rows) - 20:
+                self.load_more_offers()
 
     @on(DataTable.RowSelected)
     def row_selected(self):

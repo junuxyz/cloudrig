@@ -223,3 +223,48 @@ def test_rate_limit_header_raises_rate_limited():
         with pytest.raises(RateLimited) as exc:
             client.instances()
         assert exc.value.seconds == 12
+
+
+def test_initial_offers_merges_budget_and_high_vram_and_paginates():
+    vault.save_keys("read-tok", "action-tok", "5678", scoped=True)
+    cheap = {
+        "id": 101,
+        "gpu_name": "RTX_3090",
+        "num_gpus": 1,
+        "gpu_ram": 24576,
+        "dph_base": 0.15,
+        "storage_cost": 72.0,
+        "disk_space": 500,
+        "geolocation": "US",
+    }
+    h100 = {
+        "id": 202,
+        "gpu_name": "H100_SXM",
+        "num_gpus": 1,
+        "gpu_ram": 81920,
+        "dph_base": 2.10,
+        "storage_cost": 72.0,
+        "disk_space": 1000,
+        "geolocation": "DE",
+    }
+    page2 = {**h100, "id": 303, "dph_base": 2.50}
+
+    def handle(method, path, auth, body):
+        if path == "/api/v0/gpu_names/unique/":
+            return 200, {"gpu_names": ["RTX_3090", "H100_SXM"]}, None
+        if path == "/api/v0/bundles/":
+            if body.get("dph_total"):
+                return 200, {"offers": [page2]}, None
+            if body.get("gpu_ram"):
+                return 200, {"offers": [h100]}, None
+            return 200, {"offers": [cheap]}, None
+        return 404, {}, None
+
+    with FakeVastServer(handle) as server:
+        client = vast.VastClient(base_url=server.base_url)
+        initial = client.offers()
+        assert {row.id for row in initial} == {"101", "202"}
+        assert client.has_gpu_match("h100")
+        assert not client.has_gpu_match("tokyo")
+        extra = client.more_offers(after_price=2.10)
+        assert [row.id for row in extra] == ["303"]

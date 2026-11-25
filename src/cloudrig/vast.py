@@ -7,6 +7,7 @@ import math
 import socket
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
@@ -253,8 +254,40 @@ class VastClient:
             return vault.get_read_key()
         return vault.unlock_action_key("UNLOCK VAST.AI\nNo separate read key saved; enter PIN to read.")
 
+    def _ensure_gpu_names(self, token: str) -> list[str]:
+        if self._gpu_names is None:
+            names_resp = api_call("GET", "/api/v0/gpu_names/unique/", token, base_url=self.base_url)
+            self._gpu_names = [
+                name for name in ((names_resp or {}).get("gpu_names") or []) if isinstance(name, str)
+            ]
+        return self._gpu_names
+
+    def has_gpu_match(self, query: str) -> bool:
+        needle = query.strip().lower()
+        if len(needle) < 2:
+            return False
+        names = self._gpu_names
+        if names is None:
+            try:
+                names = self._ensure_gpu_names(self._read_token())
+            except CrigError:
+                return False
+        return any(needle in name.lower().replace("_", " ") or needle in name.lower() for name in names)
+
+    def _query_bundles(self, token: str, payload: dict, disk: int) -> list[Offer]:
+        result = api_call("POST", "/api/v0/bundles/", token, payload, base_url=self.base_url)
+        rows = (result or {}).get("offers") or []
+        return [_parse_offer(row, disk) for row in rows if isinstance(row, dict)]
+
     def offers(
-        self, query: str = "", disk: int = 40, count: int = 1, *, offer_id: str | None = None
+        self,
+        query: str = "",
+        disk: int = 40,
+        count: int = 1,
+        *,
+        offer_id: str | None = None,
+        min_price: float | None = None,
+        limit: int = 250,
     ) -> list[Offer]:
         token = self._read_token()
         payload: dict = {
@@ -267,9 +300,11 @@ class VastClient:
             "direct_port_count": {"gte": 1},
             "type": "on-demand",
             "order": [["dph_total", "asc"]],
-            "limit": 250,
+            "limit": limit,
             "allocated_storage": disk,
         }
+        if min_price is not None:
+            payload["dph_total"] = {"gt": min_price}
         if offer_id is not None:
             try:
                 numeric = int(offer_id)
@@ -278,20 +313,47 @@ class VastClient:
             except ValueError as error:
                 raise CrigError("Invalid Vast.ai offer ID.") from error
             payload["ask_contract_id"] = {"eq": numeric}
-        elif query:
-            if self._gpu_names is None:
-                names_resp = api_call("GET", "/api/v0/gpu_names/unique/", token, base_url=self.base_url)
-                self._gpu_names = [
-                    name for name in ((names_resp or {}).get("gpu_names") or []) if isinstance(name, str)
-                ]
-            matched = [name for name in self._gpu_names if query.lower() in name.lower()]
+            return self._query_bundles(token, payload, disk)
+
+        if query:
+            all_names = self._ensure_gpu_names(token)
+            needle = query.lower()
+            matched = [
+                name
+                for name in all_names
+                if needle in name.lower() or needle in name.lower().replace("_", " ")
+            ]
             if not matched:
                 return []
             payload["gpu_name"] = {"in": matched}
+            return self._query_bundles(token, payload, disk)
 
-        result = api_call("POST", "/api/v0/bundles/", token, payload, base_url=self.base_url)
-        rows = (result or {}).get("offers") or []
-        return [_parse_offer(row, disk) for row in rows if isinstance(row, dict)]
+        if min_price is not None:
+            return self._query_bundles(token, payload, disk)
+
+        # Initial load: fetch cheapest offers + high-VRAM GPUs + GPU name list in parallel (~2s total).
+        cheap_payload = {**payload, "limit": 200}
+        vram_payload = {**payload, "gpu_ram": {"gte": 40000}, "limit": 150}
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            cheap_fut = pool.submit(self._query_bundles, token, cheap_payload, disk)
+            vram_fut = pool.submit(self._query_bundles, token, vram_payload, disk)
+            names_fut = pool.submit(self._ensure_gpu_names, token)
+            cheap_rows = cheap_fut.result()
+            try:
+                vram_rows = vram_fut.result()
+            except CrigError:
+                vram_rows = []
+            try:
+                names_fut.result()
+            except CrigError:
+                pass
+        seen: dict[str, Offer] = {}
+        for row in (*cheap_rows, *vram_rows):
+            seen.setdefault(row.id, row)
+        return list(seen.values())
+
+    def more_offers(self, after_price: float, query: str = "", disk: int = 40, count: int = 1) -> list[Offer]:
+        return self.offers(query, disk=disk, count=count, min_price=after_price, limit=250)
 
     def instances(self) -> list[Instance]:
         token = self._read_token()
