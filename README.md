@@ -8,7 +8,7 @@ Run cloud GPU experiments from your terminal — fast, simple, and agent-friendl
 
 - **GPU search**: browse, filter, and sort live Vast.ai offers in the TUI or CLI (`--plain` / `--json`).
 - **One-command VS Code**: injects a throwaway SSH key at boot, tries direct SSH before proxy, and cleans up on destroy.
-- **Agent-safe controls**: auto-mints a read-only key and a PIN-locked, no-billing action key. Rent, stop, and destroy confirm on `/dev/tty` with live price checks.
+- **Agent-safe controls**: auto-mints a read-only key and a PIN-locked, no-billing action key. Rent, stop, and destroy confirm on `/dev/tty` with live price checks ([security details](docs/security.md)).
 
 ## Install
 
@@ -33,15 +33,6 @@ crig logout           # Remove saved local keys
 ```
 
 Add `--plain` or `--json` for script-friendly output.
-
-## Security
-
-Cloudrig splits your Vast.ai access into two scoped keys automatically during `crig login`:
-
-- **Read key** (`read.key`) — browse offers and check instances with zero prompts. Cannot rent, stop, destroy, or touch billing.
-- **Action key** (`action.key.enc`) — rent, stop, and destroy only (no billing or API-key permissions), encrypted with a PIN read directly from `/dev/tty`.
-
-The key you paste during `crig login` is never saved. See [docs/security.md](docs/security.md).
 
 ## License
 
