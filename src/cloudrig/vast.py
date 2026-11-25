@@ -244,7 +244,7 @@ def _parse_instance(row: dict) -> Instance:
         name=_text(row.get("label")) or ident,
         gpu=_text(row.get("gpu_name")).replace("_", " "),
         count=count,
-        status=_text(row.get("actual_status")).lower() or "unknown",
+        status=_text(row.get("actual_status")).lower() or _text(row.get("cur_state")).lower() or "loading",
         hourly=_num(row.get("dph_total")),
         region=_text(row.get("geolocation")) or "Unknown",
         host=host,

@@ -19,6 +19,7 @@ from cloudrig.style import (
     css_variables,
     gb,
     gpu_label,
+    is_transitional,
     palette,
     pct,
     per_day,
@@ -269,7 +270,7 @@ class Actions(Dialog):
     def paint(self):
         colors = palette(self.app)
         row = self.instance
-        mark, color = status_style(row.status, colors)
+        mark, color = status_style(row.status, colors, frame=self.app.spin)
         self.query_one("#checkout-title", Static).update(
             Text.assemble(
                 (f"{mark} {row.status}", color),
@@ -484,6 +485,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.announce = False
         self.previous: dict[str, float] = {}
         self._search_timer = None
+        self._status_timer = None
         self._remote_query = query
         self._base_query = query
         self._load_gen = 0
@@ -541,8 +543,34 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         )
 
     def instance_status(self, row: Instance, colors) -> Text:
-        mark, color = status_style(row.status, colors)
+        mark, color = status_style(row.status, colors, frame=self.spin)
         return Text(f"{mark} {row.status}", style=color)
+
+    def _sync_status_spinner(self):
+        active = (
+            self.rented
+            and not self.loading
+            and any(isinstance(row, Instance) and is_transitional(row.status) for row in self.visible_rows)
+        )
+        if active and self._status_timer is None:
+            self._status_timer = self.set_interval(SPINNER_INTERVAL, self._tick_status_spinner)
+        elif not active and self._status_timer is not None:
+            self._status_timer.stop()
+            self._status_timer = None
+
+    def _tick_status_spinner(self):
+        if not self.rented or self.loading:
+            self._sync_status_spinner()
+            return
+        self.spin += 1
+        colors = palette(self)
+        table = self.query_one(DataTable)
+        for row in self.visible_rows:
+            if isinstance(row, Instance) and is_transitional(row.status):
+                table.update_cell(row.id, "status", self.instance_status(row, colors))
+        self.update_inspector()
+        if isinstance(self.screen, Actions) and is_transitional(self.screen.instance.status):
+            self.screen.paint()
 
     def get_css_variables(self) -> dict[str, str]:
         variables = super().get_css_variables()
@@ -866,6 +894,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.update_inspector()
         self.paint_splash()
         self.paint_error()
+        self._sync_status_spinner()
 
     def paint_meta(self):
         if not self.query("#meta"):
@@ -1011,7 +1040,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             if row.reliability is not None:
                 text.append(f"   {pct(row.reliability)} reliable", style=colors["ink-2"])
         else:
-            mark, color = status_style(row.status, colors)
+            mark, color = status_style(row.status, colors, frame=self.app.spin)
             text.append(f"{row.name}   ", style=colors["ink"])
             text.append(f"{mark} {row.status}", style=color)
             text.append(f"   {per_hour(row.hourly)}", style=colors["ink-3"])
@@ -1059,7 +1088,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         return text
 
     def instance_card(self, row: Instance, colors) -> Text:
-        mark, color = status_style(row.status, colors)
+        mark, color = status_style(row.status, colors, frame=self.app.spin)
         text = Text()
         text.append(f"{row.name}\n", style=f"bold {colors['ink']}")
         text.append(f"{mark} {row.status}", style=color)
@@ -1133,6 +1162,9 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             return
         if self._search_timer is not None:
             self._search_timer.stop()
+        if self._status_timer is not None:
+            self._status_timer.stop()
+            self._status_timer = None
         self._load_gen += 1
         self.workers.cancel_group(self, "dynamic-offers")
         self.workers.cancel_group(self, "load-more")

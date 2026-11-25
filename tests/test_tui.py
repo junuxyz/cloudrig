@@ -201,3 +201,21 @@ async def test_provider_failure_remains_visible_and_retry_recovers():
         await pilot.press("r")
         await pilot.pause()
         assert app.visible_rows and not splash.display and app.load_error is None
+
+
+async def test_loading_instance_animates_braille_spinner():
+    from cloudrig.models import Instance
+    from cloudrig.style import SPINNER
+
+    class LoadingDemo(Demo):
+        def instances(self):
+            return [Instance("i-1", "vastai", "booting", "RTX 5090", 1, "loading", 0.4, "US")]
+
+    app = CloudrigApp(LoadingDemo(), rented=True, demo=True)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        first = str(app.query_one(DataTable).get_cell("i-1", "status"))
+        assert first.endswith(" loading") and first[0] in SPINNER
+        await pilot.pause(0.2)
+        second = str(app.query_one(DataTable).get_cell("i-1", "status"))
+        assert second.endswith(" loading") and second[0] in SPINNER and second != first

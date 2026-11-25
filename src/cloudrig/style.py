@@ -117,12 +117,18 @@ def css_variables(theme: Theme, variables: dict[str, str]) -> dict[str, str]:
     }
 
 
-def status_style(status: str, colors: dict[str, str]) -> tuple[str, str]:
+def is_transitional(status: str) -> bool:
+    return status not in {"running", "stopped", "exited", "failed", "error", "terminated"}
+
+
+def status_style(status: str, colors: dict[str, str], *, frame: int = 0) -> tuple[str, str]:
     if status == "running":
         return "●", colors["success"]
     if status in {"stopped", "exited"}:
         return "○", colors["ink-3"]
-    return "◌", colors["warning"]
+    if status in {"failed", "error", "terminated"}:
+        return "✕", colors["error"]
+    return SPINNER[frame % len(SPINNER)], colors["warning"]
 
 
 # Display formats. Each one is the only way its kind of value is written.
