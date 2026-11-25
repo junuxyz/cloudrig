@@ -54,8 +54,6 @@ class Offer:
     vram: float
     hourly: float
     region: str
-    availability: str = "available"
-    cloud: str = ""
     disk_hourly_gb: float | None = None
     disk_max: float | None = None
     reliability: float | None = None
@@ -64,7 +62,7 @@ class Offer:
         if self.provider != "vastai":
             raise CrigError("Only Vast.ai is supported.")
         instance_id(self.id)
-        for value in (self.gpu, self.region, self.cloud, self.availability):
+        for value in (self.gpu, self.region):
             safe_text(value)
         if not isinstance(self.count, int) or isinstance(self.count, bool) or self.count < 1:
             raise CrigError("Invalid GPU count.")
@@ -85,6 +83,20 @@ class Offer:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def offer_hourly(offer: Offer, disk: int) -> float:
+    total = offer.total(disk)
+    return total if total is not None else offer.hourly
+
+
+def sorted_offers(offers: list[Offer], sort: str, disk: int) -> list[Offer]:
+    def key(offer: Offer):
+        price = offer_hourly(offer, disk)
+        order = {"price": price, "vram": -offer.vram, "region": offer.region, "gpus": -offer.count}
+        return order[sort], price, offer.id
+
+    return sorted(offers, key=key)
 
 
 @dataclass(frozen=True)

@@ -22,7 +22,6 @@ from cloudrig.tui import Checkout, CloudrigApp
         (style.gpu_label("A100 SXM4", 1), "A100 SXM4"),
         (style.named("inference", "demo-02"), "inference (demo-02)"),
         (style.provider_label("vastai"), "Vast.ai"),
-        (style.provider_label("runpod"), "RunPod"),
     ],
 )
 def test_display_formats(text, expected):

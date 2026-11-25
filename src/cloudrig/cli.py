@@ -7,10 +7,10 @@ import sys
 from rich.table import Table
 from rich.text import Text
 
-from cloudrig import __version__, state, vast, vault
+from cloudrig import __version__, vast, vault
 from cloudrig.connections import connect_editor
 from cloudrig.demo import Demo
-from cloudrig.models import Cancelled, CrigError, InstanceAction, Offer, Rental
+from cloudrig.models import Cancelled, CrigError, InstanceAction, Rental, sorted_offers
 from cloudrig.style import gb, gpu_label, named, usd
 from cloudrig.terminal import console, waiting
 
@@ -87,20 +87,6 @@ def logout() -> None:
     console.print("Removed saved local keys.", style="crig.ok")
 
 
-def _offer_hourly(offer: Offer, disk: int) -> float:
-    total = offer.total(disk)
-    return total if total is not None else offer.hourly
-
-
-def _sorted_offers(rows: list[Offer], sort: str, disk: int) -> list[Offer]:
-    def key(offer: Offer):
-        price = _offer_hourly(offer, disk)
-        order = {"price": price, "vram": -offer.vram, "region": offer.region, "gpus": -offer.count}
-        return order[sort], price, offer.id
-
-    return sorted(rows, key=key)
-
-
 def print_rows(rows, args) -> None:
     if args.json:
         print(json.dumps([row.to_dict() for row in rows], indent=2))
@@ -116,7 +102,7 @@ def print_rows(rows, args) -> None:
     else:
         for name in ("gpu", "vram", "price/hr", "region", "offer"):
             table.add_column(name)
-        for row in _sorted_offers(rows, args.sort, args.disk):
+        for row in sorted_offers(rows, args.sort, args.disk):
             total = row.total(args.disk)
             rate_text = usd(row.hourly, partial=True) if total is None else usd(total)
             table.add_row(
@@ -137,7 +123,6 @@ def rent(api, rental: Rental, args):
         console.print("Demo only. No GPU was rented.")
         return None
     identifier = api.rent(rental)
-    state.remember_instance(identifier)
     console.print(Text(f"Rented {named(rental.name, identifier)}.", style="crig.ok"))
     return identifier
 

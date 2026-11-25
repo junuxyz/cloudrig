@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cloudrig"
-version = "0.4.0"
+version = "1.0.0"
 description = "Rent Vast.ai GPUs, open VS Code, stop, and delete."
 readme = "README.md"
 license = "MIT"

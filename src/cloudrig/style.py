@@ -5,7 +5,7 @@ from textual.app import App
 from textual.color import Color
 from textual.theme import Theme
 
-PROVIDER_LABELS = {"vastai": "Vast.ai", "runpod": "RunPod"}
+PROVIDER_LABELS = {"vastai": "Vast.ai"}
 
 # Text ink as a share of the foreground blended over the background. Light ink-3 is higher
 # so it keeps 3:1 contrast on its paler background.

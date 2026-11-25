@@ -98,10 +98,3 @@ def update(**changes) -> dict:
         data.update(changes)
         atomic_write(config_dir() / "config.json", json.dumps(data, indent=2) + "\n")
         return data
-
-
-def remember_instance(identifier: str) -> None:
-    with state_lock():
-        data = load()
-        data["last_instance"] = identifier
-        atomic_write(config_dir() / "config.json", json.dumps(data, indent=2) + "\n")

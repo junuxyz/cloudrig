@@ -6,37 +6,6 @@ from cloudrig.models import CrigError, InstanceAction, Rental
 from cloudrig.tui import Actions, Checkout, Choice, CloudrigApp, Help
 
 
-async def test_update_check_does_not_block_dashboard_and_shows_action(monkeypatch):
-    from threading import Event
-
-    release_ready = Event()
-    messages = []
-
-    def check():
-        release_ready.wait(3)
-        return "0.3.0"
-
-    monkeypatch.setattr("cloudrig.updates.check_notice", check)
-    app = CloudrigApp(Demo(), "5090")
-    monkeypatch.setattr(app, "notify", lambda message, **kwargs: messages.append(str(message)))
-    try:
-        async with app.run_test(size=(120, 36)) as pilot:
-            await pilot.pause()
-            assert app.query_one(DataTable).row_count == 5
-            assert not release_ready.is_set()
-            release_ready.set()
-            await app.workers.wait_for_complete()
-            assert "Cloudrig 0.3.0 is available. Run crig update." in messages
-    finally:
-        release_ready.set()
-
-
-async def test_demo_does_not_check_for_updates(monkeypatch):
-    monkeypatch.setattr("cloudrig.updates.check_notice", lambda: pytest.fail("Demo checked releases"))
-    async with CloudrigApp(Demo(), demo=True).run_test() as pilot:
-        await pilot.pause()
-
-
 @pytest.mark.parametrize("size", [(120, 36), (80, 24)])
 async def test_search_sort_filter_and_cancel(size):
     api = Demo()

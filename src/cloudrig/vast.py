@@ -200,7 +200,7 @@ def _parse_offer(row: dict, disk: int) -> Offer:
     offer_id = _text(row.get("id"))
     gpu = _text(row.get("gpu_name")).replace("_", " ")
     count = int(_num(row.get("num_gpus")))
-    vram = _num(row.get("gpu_ram")) / 1024.0
+    vram = round(_num(row.get("gpu_ram")) / 1024.0, 1)
     disk_rate = _num(row["storage_cost"]) / 720.0 if row.get("storage_cost") is not None else None
     if row.get("dph_base") is not None:
         hourly = _num(row.get("dph_base"))

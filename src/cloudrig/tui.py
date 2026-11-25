@@ -10,8 +10,8 @@ from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
 from textual.widgets import Button, DataTable, Input, Label, Static
 
-from cloudrig import __version__, state, updates
-from cloudrig.models import CrigError, Instance, InstanceAction, Offer, Rental
+from cloudrig import __version__, state
+from cloudrig.models import CrigError, Instance, InstanceAction, Offer, Rental, offer_hourly, sorted_offers
 from cloudrig.style import (
     SPINNER,
     SPINNER_INTERVAL,
@@ -39,23 +39,13 @@ SORT_COLUMNS = {
 SIDEBAR_MIN_WIDTH = 104
 
 
-def sorted_offers(offers: list[Offer], sort: str, disk: int) -> list[Offer]:
-    def key(offer):
-        price = hourly(offer, disk)
-        order = {"price": price, "vram": -offer.vram, "region": offer.region, "gpus": -offer.count}
-        return order[sort], price, offer.id
-
-    return sorted(offers, key=key)
-
-
 def rate(offer: Offer, disk: int) -> str:
     total = offer.total(disk)
     return usd(offer.hourly, partial=True) if total is None else usd(total)
 
 
 def hourly(offer: Offer, disk: int) -> float:
-    total = offer.total(disk)
-    return total if total is not None else offer.hourly
+    return offer_hourly(offer, disk)
 
 
 def hints(text: Text, pairs: list[tuple[str, str]], colors: dict[str, str]) -> Text:
@@ -130,9 +120,8 @@ class Checkout(Dialog):
     def paint(self):
         colors = palette(self.app)
         offer = self.offer
-        provider = provider_label(offer.provider) + (f" {offer.cloud.lower()}" if offer.cloud else "")
         self.query_one("#checkout-title", Static).update(
-            Text(f"{offer.region}   {provider}   {offer.id}", style=colors["ink-3"])
+            Text(f"{offer.region}   {provider_label(offer.provider)}   {offer.id}", style=colors["ink-3"])
         )
         self.update_quote()
         error = self.query_one("#checkout-error", Static)
@@ -541,18 +530,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.load_rows()
         self.paint_error()
         if not self.demo:
-            self.check_updates()
             self.set_interval(30, lambda: self.load_rows() if self.rented and not self.loading else None)
-
-    @work(exclusive=True, group="update-check")
-    async def check_updates(self):
-        version = await asyncio.to_thread(updates.check_notice)
-        if version:
-            self.notify(
-                f"Cloudrig {version} is available. Run crig update.",
-                title="Update available",
-                timeout=12,
-            )
 
     def paint_error(self):
         if not self.query("#action-feedback"):
@@ -646,7 +624,10 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         if self.size.width < 100:
             pairs = pairs[1:3]
         left = hints(Text(no_wrap=True, overflow="ellipsis"), pairs, colors)
-        right = hints(Text(no_wrap=True), [("?", "keys"), ("ctrl+p", "commands")], colors)
+        right_pairs = [("?", "keys"), ("q", "quit")]
+        if self.size.width >= 100:
+            right_pairs.append(("ctrl+p", "commands"))
+        right = hints(Text(no_wrap=True), right_pairs, colors)
         self.query_one("#status-left", Static).update(left)
         self.query_one("#status-right", Static).update(right)
 
@@ -1060,8 +1041,6 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             field(text, "reliability", pct(row.reliability), colors)
         if row.disk_max is not None:
             field(text, "max disk", gb(row.disk_max), colors)
-        if row.availability != "available":
-            field(text, "stock", Text(row.availability, style=colors["warning"]), colors)
         field(text, "offer", row.id, colors)
 
         prices = sorted(hourly(offer, self.disk) for offer in self.visible_rows)
