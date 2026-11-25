@@ -1,4 +1,4 @@
-"""Keep the design system in docs/design-system.md from drifting."""
+"""Keep shared visual tokens and layout constraints from drifting."""
 
 import re
 from pathlib import Path

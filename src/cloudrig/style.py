@@ -1,4 +1,4 @@
-"""Visual tokens and display formats shared by the dashboard and the CLI. See docs/design-system.md."""
+"""Visual tokens and display formats shared by the dashboard and the CLI."""
 
 from datetime import datetime, timedelta
 
