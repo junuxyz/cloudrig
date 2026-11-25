@@ -7,7 +7,6 @@ import math
 import socket
 import ssl
 import time
-from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
@@ -87,7 +86,15 @@ def _text(value) -> str:
     return ""
 
 
-def api_call(method: str, path: str, token: str, body: dict | None = None, *, base_url: str = BASE_URL):
+def api_call(
+    method: str,
+    path: str,
+    token: str,
+    body: dict | None = None,
+    *,
+    base_url: str = BASE_URL,
+    retry_short_429: bool = False,
+):
     if not path.startswith("/api/"):
         raise CrigError("Invalid Vast.ai API path.")
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -102,20 +109,28 @@ def api_call(method: str, path: str, token: str, body: dict | None = None, *, ba
             "Accept-Encoding": "gzip",
         },
     )
-    try:
-        with _opener().open(request, timeout=30) as response:
-            if response.status == 204:
-                return {}
-            raw = response.read(_MAX_RESPONSE_BYTES + 1)
-            encoding = (response.headers.get("Content-Encoding") or "").lower()
-    except HTTPError as error:
-        if error.code == 429:
-            raise RateLimited(_retry_after(error.headers.get("Retry-After"))) from None
-        if error.code in (401, 403):
-            raise _AuthDenied("Vast.ai rejected this API key. Check your key or run crig login.") from None
-        raise CrigError(f"Vast.ai request failed with HTTP {error.code}.") from None
-    except (URLError, OSError) as error:
-        raise CrigError("Could not connect to Vast.ai.") from error
+    for attempt in range(2 if retry_short_429 else 1):
+        try:
+            with _opener().open(request, timeout=30) as response:
+                if response.status == 204:
+                    return {}
+                raw = response.read(_MAX_RESPONSE_BYTES + 1)
+                encoding = (response.headers.get("Content-Encoding") or "").lower()
+            break
+        except HTTPError as error:
+            if error.code == 429:
+                wait = _retry_after(error.headers.get("Retry-After"))
+                if retry_short_429 and attempt == 0 and wait <= 5:
+                    time.sleep(wait)
+                    continue
+                raise RateLimited(wait) from None
+            if error.code in (401, 403):
+                raise _AuthDenied(
+                    "Vast.ai rejected this API key. Check your key or run crig login."
+                ) from None
+            raise CrigError(f"Vast.ai request failed with HTTP {error.code}.") from None
+        except (URLError, OSError) as error:
+            raise CrigError("Could not connect to Vast.ai.") from error
 
     if len(raw) > _MAX_RESPONSE_BYTES:
         raise CrigError("Vast.ai response was too large.")
@@ -248,6 +263,8 @@ class VastClient:
     def __init__(self, *, base_url: str = BASE_URL):
         self.base_url = base_url
         self._gpu_names: list[str] | None = None
+        self._instances_cache: tuple[float, list[Instance]] | None = None
+        self._offers_cache: dict[tuple, tuple[float, list[Offer]]] = {}
 
     def _read_token(self) -> str:
         if vault.has_read_key():
@@ -256,7 +273,9 @@ class VastClient:
 
     def _ensure_gpu_names(self, token: str) -> list[str]:
         if self._gpu_names is None:
-            names_resp = api_call("GET", "/api/v0/gpu_names/unique/", token, base_url=self.base_url)
+            names_resp = api_call(
+                "GET", "/api/v0/gpu_names/unique/", token, base_url=self.base_url, retry_short_429=True
+            )
             self._gpu_names = [
                 name for name in ((names_resp or {}).get("gpu_names") or []) if isinstance(name, str)
             ]
@@ -275,7 +294,9 @@ class VastClient:
         return any(needle in name.lower().replace("_", " ") or needle in name.lower() for name in names)
 
     def _query_bundles(self, token: str, payload: dict, disk: int) -> list[Offer]:
-        result = api_call("POST", "/api/v0/bundles/", token, payload, base_url=self.base_url)
+        result = api_call(
+            "POST", "/api/v0/bundles/", token, payload, base_url=self.base_url, retry_short_429=True
+        )
         rows = (result or {}).get("offers") or []
         return [_parse_offer(row, disk) for row in rows if isinstance(row, dict)]
 
@@ -326,52 +347,37 @@ class VastClient:
             if not matched:
                 return []
             payload["gpu_name"] = {"in": matched}
-            return self._query_bundles(token, payload, disk)
 
-        if min_price is not None:
-            return self._query_bundles(token, payload, disk)
+        cache_key = (query.lower(), disk, count, min_price, limit)
+        cached = self._offers_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < 15.0:
+            return list(cached[1])
 
-        # Initial load: fetch cheapest offers + high-VRAM GPUs in parallel (2 requests avoids 429s).
-        cheap_payload = {**payload, "limit": 200}
-        vram_payload = {**payload, "gpu_ram": {"gte": 40000}, "limit": 150}
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            cheap_fut = pool.submit(self._query_bundles, token, cheap_payload, disk)
-            vram_fut = pool.submit(self._query_bundles, token, vram_payload, disk)
-            cheap_err: CrigError | None = None
-            try:
-                cheap_rows = cheap_fut.result()
-            except CrigError as error:
-                cheap_rows = []
-                cheap_err = error
-            try:
-                vram_rows = vram_fut.result()
-            except CrigError:
-                if cheap_err is not None:
-                    raise cheap_err from None
-                vram_rows = []
-        seen: dict[str, Offer] = {}
-        for row in (*cheap_rows, *vram_rows):
-            seen.setdefault(row.id, row)
-        return list(seen.values())
+        rows = self._query_bundles(token, payload, disk)
+        self._offers_cache[cache_key] = (time.monotonic(), rows)
+        return list(rows)
 
     def more_offers(self, after_price: float, query: str = "", disk: int = 40, count: int = 1) -> list[Offer]:
         return self.offers(query, disk=disk, count=count, min_price=after_price, limit=250)
 
-    def instances(self) -> list[Instance]:
+    def instances(self, *, fresh: bool = False) -> list[Instance]:
+        if not fresh and self._instances_cache and time.monotonic() - self._instances_cache[0] < 5.0:
+            return list(self._instances_cache[1])
         token = self._read_token()
         items: list[Instance] = []
         cursor = ""
         seen: set[str] = set()
         while True:
             path = f"/api/v1/instances/?limit=100&after_token={quote(cursor, safe='')}"
-            result = api_call("GET", path, token, base_url=self.base_url)
+            result = api_call("GET", path, token, base_url=self.base_url, retry_short_429=True)
             raw_list = (result or {}).get("instances")
             if not isinstance(raw_list, list):
                 raise CrigError("Vast.ai returned an invalid instance list.")
             items.extend(_parse_instance(row) for row in raw_list if isinstance(row, dict))
             next_token = (result or {}).get("next_token") or ""
             if not next_token:
-                return items
+                self._instances_cache = (time.monotonic(), items)
+                return list(items)
             if not isinstance(next_token, str) or next_token in seen:
                 raise CrigError("Vast.ai returned an invalid pagination cursor.")
             seen.add(next_token)
@@ -446,6 +452,7 @@ class VastClient:
             raise CrigError("Rental outcome is unclear. Check crig --rented before trying again.")
 
         connections.bind_temp_keypair(temp_key, new_id)
+        self._instances_cache = None
 
         # Also register the key with Vast.ai's API so proxy SSH works if direct SSH is blocked.
         try:
@@ -485,6 +492,7 @@ class VastClient:
             {"state": "stopped"},
             base_url=self.base_url,
         )
+        self._instances_cache = None
 
     def destroy(self, target: Instance | str) -> None:
         item = target if isinstance(target, Instance) else self.instance(target)
@@ -499,4 +507,5 @@ class VastClient:
             action_key,
             base_url=self.base_url,
         )
+        self._instances_cache = None
         connections.cleanup_instance(item.id)

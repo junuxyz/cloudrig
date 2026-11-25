@@ -542,7 +542,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         self.paint_error()
         if not self.demo:
             self.check_updates()
-            self.set_interval(10, lambda: self.load_rows() if self.rented and not self.loading else None)
+            self.set_interval(30, lambda: self.load_rows() if self.rented and not self.loading else None)
 
     @work(exclusive=True, group="update-check")
     async def check_updates(self):

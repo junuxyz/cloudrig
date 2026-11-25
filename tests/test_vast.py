@@ -227,8 +227,9 @@ def test_rate_limit_header_raises_rate_limited():
         assert exc.value.seconds == 12
 
 
-def test_initial_offers_merges_budget_and_high_vram_and_paginates():
+def test_offers_pagination_and_short_429_auto_retry(monkeypatch):
     vault.save_keys("read-tok", "action-tok", "5678", scoped=True)
+    monkeypatch.setattr(vast.time, "sleep", lambda s: None)
     cheap = {
         "id": 101,
         "gpu_name": "RTX_3090",
@@ -239,34 +240,27 @@ def test_initial_offers_merges_budget_and_high_vram_and_paginates():
         "disk_space": 500,
         "geolocation": "US",
     }
-    h100 = {
-        "id": 202,
-        "gpu_name": "H100_SXM",
-        "num_gpus": 1,
-        "gpu_ram": 81920,
-        "dph_base": 2.10,
-        "storage_cost": 72.0,
-        "disk_space": 1000,
-        "geolocation": "DE",
-    }
-    page2 = {**h100, "id": 303, "dph_base": 2.50}
+    page2 = {**cheap, "id": 303, "gpu_name": "H100_SXM", "gpu_ram": 81920, "dph_base": 2.50}
+    attempts = {"bundles": 0}
 
     def handle(method, path, auth, body):
         if path == "/api/v0/gpu_names/unique/":
             return 200, {"gpu_names": ["RTX_3090", "H100_SXM"]}, None
         if path == "/api/v0/bundles/":
+            attempts["bundles"] += 1
+            if attempts["bundles"] == 1:
+                return 429, {"error": "burst"}, {"Retry-After": "2"}
             if body.get("dph_total"):
                 return 200, {"offers": [page2]}, None
-            if body.get("gpu_ram"):
-                return 200, {"offers": [h100]}, None
             return 200, {"offers": [cheap]}, None
         return 404, {}, None
 
     with FakeVastServer(handle) as server:
         client = vast.VastClient(base_url=server.base_url)
         initial = client.offers()
-        assert {row.id for row in initial} == {"101", "202"}
+        assert [row.id for row in initial] == ["101"]
+        assert attempts["bundles"] == 2  # Retried the brief 2s 429 automatically.
         assert client.has_gpu_match("h100")
         assert not client.has_gpu_match("tokyo")
-        extra = client.more_offers(after_price=2.10)
+        extra = client.more_offers(after_price=0.20)
         assert [row.id for row in extra] == ["303"]
