@@ -335,7 +335,7 @@ Measured against the dashboard rendered at 120×36 and 80×24 in both themes, wi
 - Checkout note truncates to `Your password is required to rent this` (`tui.py:196`, `#next-step` height 1).
 - Rich text styles are baked at paint time. An open dialog keeps the old theme's ink after a theme change, so
   in light mode the checkout headline price turns near-invisible.
-- `docs/*.svg` screenshots predate the current copy and colors (for example, they still show
+- `assets/*.svg` screenshots predate the current copy and colors (for example, they still show
   `Sudo will check the price before rental.`).
 
 ## 10. Migration plan
@@ -353,7 +353,7 @@ Each step is a small, reviewable commit. Steps 1 to 3 change no visible behavior
    spinner, case rules in hints and help, vertical rhythm, compact gap.
 5. **CLI.** Add the Rich theme from section 8 to `terminal.console` and migrate `cli.py`, `installation.py`,
    and `onboarding.py`.
-6. **Screenshots.** Run `uv run python scripts/preview.py` and commit the regenerated `docs/*.svg`. Add a
+6. **Screenshots.** Run `uv run python scripts/preview.py` and commit the regenerated `assets/*.svg`. Add a
    light-theme checkout to the preview set.
 7. **Guards.** Add tests that fail when a hex color or a `%` opacity appears outside `style.py`, when `·`
    appears in any user-visible string, and when a dashboard screenshot at 80×24 has a line that overflows.
@@ -369,4 +369,4 @@ Use before merging any UI change:
 - [ ] Case follows the section 3 table.
 - [ ] Blank line runs are 1 or 2.
 - [ ] Checked at 120×36 and 80×24, dark and light.
-- [ ] `docs/*.svg` regenerated.
+- [ ] `assets/*.svg` regenerated.

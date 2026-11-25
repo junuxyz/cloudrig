@@ -8,7 +8,7 @@ from cloudrig.tui import CloudrigApp
 
 
 async def main():
-    root = Path(__file__).resolve().parents[1] / "docs"
+    root = Path(__file__).resolve().parents[1] / "assets"
     previews = [
         (CloudrigApp(Demo(), "5090", demo=True), (120, 36), "market.svg", None, "cloudrig"),
         (CloudrigApp(Demo(), "5090", demo=True), (80, 24), "market-compact.svg", None, "cloudrig"),
