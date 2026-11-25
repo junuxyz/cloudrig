@@ -248,12 +248,12 @@ Two variants. At most one primary per dialog.
 | Secondary | no fill, `ink-2` | `tint-1`, `ink` | `tint-2`, `ink` |
 
 Destructive actions are never buttons in the dashboard. They are `-danger` choices (label in `error`) and are
-confirmed by the CLI prompt and sudo.
+confirmed by the `/dev/tty` PIN prompt.
 
 ### Choice rows
 
 Marker column 2 cells (`› ` focused in `accent`, blank at rest). Label `ink-2` at rest, `ink` bold when focused,
-`error` when destructive. Right side: permission tag (`sudo`) in `ink-3`, then the hotkey in `ink-3` (`ink-2`
+`error` when destructive. Right side: permission tag (`pin`) in `ink-3`, then the hotkey in `ink-3` (`ink-2`
 when focused). Group labels (`connect`, `manage`) in `ink-3`, 1 blank line above.
 
 ### Inputs

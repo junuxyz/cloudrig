@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cloudrig"
 version = "0.1.0"
-description = "Rent Vast.ai GPUs, open VS Code, stop, and delete."
+description = "Run cloud GPU experiments from your terminal — fast, simple, and agent-friendly."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

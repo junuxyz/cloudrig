@@ -7,8 +7,7 @@ import sys
 from rich.table import Table
 from rich.text import Text
 
-from cloudrig import __version__, vast, vault
-from cloudrig.connections import connect_editor
+from cloudrig import __version__, connections, vast, vault
 from cloudrig.demo import Demo
 from cloudrig.models import Cancelled, CrigError, InstanceAction, Rental, sorted_offers
 from cloudrig.style import gb, gpu_label, named, usd
@@ -18,7 +17,7 @@ from cloudrig.terminal import console, waiting
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         prog="crig",
-        description="Rent a Vast.ai GPU, open VS Code, stop, and delete.",
+        description="Run cloud GPU experiments from your terminal — fast, simple, and agent-friendly.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Commands:
   crig                  Open the dashboard
@@ -85,6 +84,9 @@ def login() -> None:
 def logout() -> None:
     vault.clear_keys()
     console.print("Removed saved local keys.", style="crig.ok")
+    console.print(
+        f"To revoke cloudrig keys on Vast.ai too, remove them at {vast.API_KEY_URL}", style="crig.muted"
+    )
 
 
 def print_rows(rows, args) -> None:
@@ -134,8 +136,11 @@ def action(api, item, name: str, args) -> None:
         console.print(f"Demo: {name} {item.name}. No changes made.")
         return
     if name == "code":
+        if not connections.has_keypair(item.id):
+            _, pub = connections.ensure_keypair(item.id)
+            api.attach_ssh_key(item.id, pub)
         with waiting() as progress:
-            connect_editor(api, item.id, progress=progress)
+            connections.connect_editor(api, item.id, progress=progress)
         return
     getattr(api, name)(item)
     console.print(

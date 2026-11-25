@@ -1,17 +1,17 @@
 # Cloudrig
 
-Rent a Vast.ai GPU, open VS Code, stop it, and delete it from your terminal.
+Run cloud GPU experiments from your terminal — fast, simple, and agent-friendly.
 
 ![Cloudrig dashboard with demo data](docs/instances.svg)
 
 ## Install
 
 ```sh
-uv tool install cloudrig
+uv tool install git+https://github.com/junuxyz/cloudrig
 crig
 ```
 
-Try `crig --demo` without an account. Supports macOS and Linux.
+Try `crig --demo` without an account. Currently supports macOS and Linux.
 
 ## Commands
 
