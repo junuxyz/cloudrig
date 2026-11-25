@@ -827,6 +827,10 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
 
     @on(Input.Submitted, "#search")
     def search_submitted(self):
+        needle = self.query_one("#search", Input).value.strip()
+        if not self.rented and needle and not self.visible_rows and needle != self.gpu_query:
+            self.gpu_query = needle
+            self.load_rows()
         self.query_one(DataTable).focus()
 
     @on(DataTable.RowHighlighted)

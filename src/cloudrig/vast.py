@@ -1,6 +1,7 @@
 """Minimal Vast.ai client with scoped keys and PIN-gated mutations."""
 
 import email.utils
+import gzip
 import json
 import math
 import socket
@@ -97,6 +98,7 @@ def api_call(method: str, path: str, token: str, body: dict | None = None, *, ba
             "Authorization": f"Bearer {token.strip()}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Accept-Encoding": "gzip",
         },
     )
     try:
@@ -104,6 +106,7 @@ def api_call(method: str, path: str, token: str, body: dict | None = None, *, ba
             if response.status == 204:
                 return {}
             raw = response.read(_MAX_RESPONSE_BYTES + 1)
+            encoding = (response.headers.get("Content-Encoding") or "").lower()
     except HTTPError as error:
         if error.code == 429:
             raise RateLimited(_retry_after(error.headers.get("Retry-After"))) from None
@@ -115,6 +118,13 @@ def api_call(method: str, path: str, token: str, body: dict | None = None, *, ba
 
     if len(raw) > _MAX_RESPONSE_BYTES:
         raise CrigError("Vast.ai response was too large.")
+    if encoding == "gzip":
+        try:
+            raw = gzip.decompress(raw)
+        except OSError as error:
+            raise CrigError("Vast.ai returned damaged compressed data.") from error
+        if len(raw) > _MAX_RESPONSE_BYTES:
+            raise CrigError("Vast.ai response was too large.")
     try:
         parsed = json.loads(raw)
     except ValueError as error:
@@ -236,6 +246,7 @@ class VastClient:
 
     def __init__(self, *, base_url: str = BASE_URL):
         self.base_url = base_url
+        self._gpu_names: list[str] | None = None
 
     def _read_token(self) -> str:
         if vault.has_read_key():
@@ -256,7 +267,7 @@ class VastClient:
             "direct_port_count": {"gte": 1},
             "type": "on-demand",
             "order": [["dph_total", "asc"]],
-            "limit": 10000,
+            "limit": 250,
             "allocated_storage": disk,
         }
         if offer_id is not None:
@@ -268,9 +279,12 @@ class VastClient:
                 raise CrigError("Invalid Vast.ai offer ID.") from error
             payload["ask_contract_id"] = {"eq": numeric}
         elif query:
-            names_resp = api_call("GET", "/api/v0/gpu_names/unique/", token, base_url=self.base_url)
-            all_names = (names_resp or {}).get("gpu_names") or []
-            matched = [name for name in all_names if isinstance(name, str) and query.lower() in name.lower()]
+            if self._gpu_names is None:
+                names_resp = api_call("GET", "/api/v0/gpu_names/unique/", token, base_url=self.base_url)
+                self._gpu_names = [
+                    name for name in ((names_resp or {}).get("gpu_names") or []) if isinstance(name, str)
+                ]
+            matched = [name for name in self._gpu_names if query.lower() in name.lower()]
             if not matched:
                 return []
             payload["gpu_name"] = {"in": matched}
