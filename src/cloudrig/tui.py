@@ -1,7 +1,8 @@
 import asyncio
 import math
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 
 from rich.cells import cell_len
 from rich.text import Text
@@ -1783,6 +1784,19 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             for ident in pending:
                 self.handoff_connect(ident)
 
+    @contextmanager
+    def _terminal_action(self) -> Iterator[None]:
+        stack = ExitStack()
+        try:
+            try:
+                stack.enter_context(self.suspend())
+            except SuspendNotSupported:
+                pass
+            yield
+        finally:
+            # Textual resumes only when its suspend context exits without an exception.
+            stack.close()
+
     def _start_async_code(self, instance: Instance) -> None:
         if self.demo:
             self.notify(f"Demo: code {instance.name}", timeout=3)
@@ -1793,15 +1807,9 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
             return
         if not connections.has_keypair(instance.id):
             try:
-                def attach():
+                with self._terminal_action():
                     _, pub = connections.ensure_keypair(instance.id)
                     self.provider.attach_ssh_key(instance.id, pub)
-
-                try:
-                    with self.suspend():
-                        attach()
-                except SuspendNotSupported:
-                    attach()
             except Cancelled:
                 return
             except CrigError as failure:
@@ -1824,10 +1832,7 @@ class CloudrigApp(App[Rental | InstanceAction | None]):
         if isinstance(result, InstanceAction) and result.action in {"stop", "destroy"}:
             self._cancel_connect(result.instance.id)
         try:
-            try:
-                with self.suspend():
-                    selected_id, message = self.action_runner(result)
-            except SuspendNotSupported:
+            with self._terminal_action():
                 selected_id, message = self.action_runner(result)
         except Cancelled:
             return

@@ -17,7 +17,7 @@ def test_encrypt_decrypt_roundtrip_and_wrong_pin():
     assert "vast-secret-action-token" not in json.dumps(envelope)
     assert vault.decrypt_secret(envelope, "1234") == "vast-secret-action-token"
 
-    with pytest.raises(CrigError, match="Wrong PIN"):
+    with pytest.raises(CrigError, match="^PIN password is invalid$"):
         vault.decrypt_secret(envelope, "9999")
 
 

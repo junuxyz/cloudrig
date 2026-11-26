@@ -70,7 +70,7 @@ def decrypt_secret(envelope: dict, pin: str) -> str:
     try:
         plaintext = AESGCM(key).decrypt(nonce, ciphertext, _AAD)
     except InvalidTag:
-        raise CrigError("Wrong PIN.") from None
+        raise CrigError("PIN password is invalid") from None
     return plaintext.decode("utf-8")
 
 

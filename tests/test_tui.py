@@ -1,6 +1,8 @@
 import pytest
+from textual.drivers.headless_driver import HeadlessDriver
 from textual.widgets import DataTable, Input, Static
 
+from cloudrig import vault
 from cloudrig.demo import Demo
 from cloudrig.models import CrigError, InstanceAction, Rental
 from cloudrig.tui import Actions, Checkout, Choice, CloudrigApp, Help
@@ -325,6 +327,28 @@ async def test_in_session_action_runner_handles_errors_without_exiting():
         await pilot.pause()
         assert app.action_error is None
         assert not app.query_one("#action-feedback").display
+
+
+async def test_invalid_rental_pin_resumes_terminal_and_shows_error(monkeypatch):
+    resumed = []
+    monkeypatch.setattr(HeadlessDriver, "can_suspend", True)
+    monkeypatch.setattr(HeadlessDriver, "resume_application_mode", lambda self: resumed.append(True))
+    vault.save_keys("read-key", "action-key", "4321")
+    monkeypatch.setattr(vault, "read_tty_secret", lambda prompt, *, header="": "9999")
+
+    def runner(result):
+        vault.unlock_action_key(result.name)
+        pytest.fail("Rental continued after an invalid PIN")
+
+    app = CloudrigApp(Demo(), "5090", demo=True, action_runner=runner)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press("enter")
+        await pilot.click("#rent")
+        await pilot.pause()
+        assert resumed == [True]
+        assert "PIN password is invalid" in str(app.query_one("#activity", Static).render())
+        await pilot.press("escape", "enter")
+        assert isinstance(app.screen, Checkout)
 
 
 async def test_checkout_click_outside_cancels():
