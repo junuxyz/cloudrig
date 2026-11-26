@@ -24,6 +24,10 @@ Cloudrig is a small Python package (`src/cloudrig/`) with one entry point, `crig
 
 Opening VS Code waits for the GPU to boot. When that takes a while, `crig` hands it to a detached `crig --connect-bg <id>` process so the dashboard stays usable. The security model is described in [security](security.md).
 
+## VS Code warm start
+
+At rental startup, Cloudrig reads the build ID from your local stable VS Code and downloads the matching CLI and server into `~/.vscode-server` on the GPU. When you press `c` in the dashboard, Cloudrig waits asynchronously for setup to finish, so you can keep working. It checks that `/workspace` is writable by creating and removing a temporary file, then opens VS Code automatically. Remote SSH reuses the prepared tools when it connects. If preparation fails or the image is unsupported, Remote SSH uses its usual installer.
+
 ## Why Python
 
 Cloudrig is pure Python and does not plan to add a compiled component.

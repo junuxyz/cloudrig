@@ -106,6 +106,7 @@ def test_mint_scoped_keys_cleans_up_first_key_on_second_failure():
 
 def test_offers_instances_rent_stop_destroy_and_key_separation(monkeypatch):
     vault.save_keys("read-tok", "action-tok", "5678", scoped=True)
+    monkeypatch.setattr(connections, "editor_setup_command", lambda: "exit 75")
     summaries = []
 
     def fake_tty(prompt, *, header=""):
@@ -151,6 +152,7 @@ def test_offers_instances_rent_stop_destroy_and_key_separation(monkeypatch):
             return 200, {"instances": [instance_row]}, None
         if method == "PUT" and path == "/api/v0/asks/1001/":
             assert auth == "Bearer action-tok"
+            assert "(exit 75 || true)" in body["onstart"]
             assert "ssh-ed25519 " in body["onstart"]
             assert "/root/.ssh/authorized_keys" in body["onstart"]
             return 200, {"success": True, "new_contract": 777}, None

@@ -4,6 +4,7 @@ import ipaddress
 import math
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -226,14 +227,40 @@ def _tcp_ssh_banner(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> tuple[bool, bool]:
-    """Return (port_open, auth_ok) for one endpoint without touching ~/.ssh/cloudrig/config."""
+def editor_setup_command() -> str:
+    """Return the optional setup command for the local stable VS Code build."""
+    code = shutil.which("code")
+    if not code:
+        return ""
+    try:
+        version = subprocess.run(
+            [code, "--version"], capture_output=True, text=True, timeout=3, env=child_environment(),
+        )
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        return ""
+    lines = version.stdout.strip().splitlines()
+    if version.returncode or len(lines) < 2:
+        return ""
+    if not re.fullmatch(r"\d+\.\d+\.\d+", lines[0]) or not re.fullmatch(r"[a-f0-9]{40}", lines[1]):
+        return ""
+    script = Path(__file__).with_name("prepare_editor.sh").read_text(encoding="utf-8")
+    return shlex.join(["sh", "-c", script, "cloudrig-prepare-editor", lines[1]])
+
+
+def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float, setup: str = "") -> int:
+    """Return 0 when ready, 75 during preparation, or 1 while waiting for SSH."""
     if not _tcp_ssh_banner(host, port, timeout=min(2.5, timeout)):
-        return False, False
+        return 1
     private, _ = ensure_keypair(ident)
     known = known_hosts_path(ident)
     name = alias(ident)
     connect_timeout = max(2, min(5, math.ceil(timeout)))
+    check_workspace = (
+        f"mkdir -p {WORKSPACE} && tmp=$(mktemp {WORKSPACE}/.cloudrig-XXXXXXXX) "
+        '&& rm -f "$tmp" || exit 73'
+    )
+    # An optional setup error leaves the normal Remote SSH installer available.
+    command = f'{setup}; [ "$?" != 75 ] || exit 75; {check_workspace}' if setup else check_workspace
     try:
         result = subprocess.run(
             [
@@ -266,8 +293,7 @@ def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> t
                 f"ConnectTimeout={connect_timeout}",
                 "-T",
                 f"{user}@{host}",
-                # Many images (pytorch/pytorch, some vastai/* tags) ship without the folder VS Code opens.
-                f"mkdir -p {WORKSPACE} || true",
+                command,
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -278,17 +304,18 @@ def _probe_ssh(ident: str, host: str, port: int, user: str, timeout: float) -> t
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return True, False
-    if result.returncode == 0:
-        return True, True
+        return 1
+    if result.returncode in {0, 75}:
+        return result.returncode
+    if result.returncode == 73:
+        raise CrigError(f"Could not create a file in {WORKSPACE}. Check its permissions and free disk space.")
     if "remote host identification has changed" in result.stderr.lower():
         raise CrigError("SSH host key changed for this GPU. Inspect it before reconnecting.")
-    return True, False
+    return 1
 
 
 def ssh_ready(ident: str, host: str, port: int, user: str, timeout: float) -> bool:
-    _, auth_ok = _probe_ssh(ident, host, port, user, timeout)
-    return auth_ok
+    return _probe_ssh(ident, host, port, user, timeout) == 0
 
 
 def open_code(ident: str, remote_path: str = WORKSPACE) -> None:
@@ -313,6 +340,23 @@ def _wait_or_cancel(seconds: float, cancel: threading.Event | None) -> bool:
     return False
 
 
+def _editor_endpoint(item: Instance, timeout: float, setup: str):
+    endpoints = _endpoints(item)
+    preparing = False
+    with ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
+        probes = [
+            pool.submit(_probe_ssh, item.id, host, port, item.user, timeout, setup)
+            for host, port, _direct in endpoints
+        ]
+        for endpoint, probe in zip(endpoints, probes, strict=True):
+            status = probe.result()
+            if status == 0:
+                return endpoint, None
+            if status == 75:
+                preparing = True
+    return None, "Preparing VS Code Server" if preparing else "Waiting for SSH login"
+
+
 def try_connect_editor_now(api, item: Instance, timeout: float = 3.0) -> tuple[bool, str]:
     """Open VS Code immediately if the instance is already reachable, else return (False, status)."""
     require("code")
@@ -325,18 +369,13 @@ def try_connect_editor_now(api, item: Instance, timeout: float = 3.0) -> tuple[b
     endpoints = _endpoints(fresh)
     if not endpoints:
         return False, "waiting for SSH address"
-    probe_timeout = min(timeout, 3.0)
-    with ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
-        futures = [
-            (host, port, direct, pool.submit(ssh_ready, fresh.id, host, port, fresh.user, probe_timeout))
-            for host, port, direct in endpoints
-        ]
-        for host, port, _direct, fut in futures:
-            if fut.result():
-                install_alias(fresh.id, host, port, fresh.user)
-                open_code(fresh.id)
-                return True, "opened"
-    return False, "waiting for SSH login"
+    endpoint, stage = _editor_endpoint(fresh, min(timeout, 3.0), editor_setup_command())
+    if endpoint:
+        host, port, _direct = endpoint
+        install_alias(fresh.id, host, port, fresh.user)
+        open_code(fresh.id)
+        return True, "opened"
+    return False, stage
 
 
 def connect_editor(
@@ -353,6 +392,7 @@ def connect_editor(
     if progress:
         progress(stage)
 
+    setup = editor_setup_command()
     attached = has_keypair(identifier)
     cached_item: Instance | None = None
     last_refresh = 0.0
@@ -412,24 +452,17 @@ def connect_editor(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        probe_timeout = min(4.0, remaining)
-        # Probe direct and proxy endpoints concurrently; prefer direct when both succeed.
-        with ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
-            futures = [
-                (host, port, direct, pool.submit(ssh_ready, item.id, host, port, item.user, probe_timeout))
-                for host, port, direct in endpoints
-            ]
-            for host, port, direct, fut in futures:
-                if fut.result():
-                    if cancel and cancel.is_set():
-                        return False
-                    install_alias(item.id, host, port, item.user)
-                    if progress:
-                        progress("Opening VS Code" if direct else "Opening VS Code through Vast.ai proxy")
-                    open_code(item.id)
-                    return True
+        endpoint, stage = _editor_endpoint(item, min(4.0, remaining), setup)
+        if endpoint:
+            if cancel and cancel.is_set():
+                return False
+            host, port, direct = endpoint
+            install_alias(item.id, host, port, item.user)
+            if progress:
+                progress("Opening VS Code" if direct else "Opening VS Code through Vast.ai proxy")
+            open_code(item.id)
+            return True
 
-        stage = "Waiting for the GPU to accept SSH login"
         if progress:
             progress(stage)
         if _wait_or_cancel(min(1.0, max(0, deadline - time.monotonic())), cancel):

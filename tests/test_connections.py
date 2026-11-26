@@ -59,11 +59,12 @@ def test_connect_editor_falls_back_to_proxy_and_attaches_key(monkeypatch):
     monkeypatch.setattr(connections, "require", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr(connections, "ensure_keypair", lambda ident: (Path("/tmp/k"), "ssh-ed25519 AAA"))
 
-    def fake_ready(ident, host, port, user, timeout):
+    def fake_probe(ident, host, port, user, timeout, setup):
         tried.append((host, port))
-        return host == "ssh5.vast.ai"
+        return 0 if host == "ssh5.vast.ai" else 1
 
-    monkeypatch.setattr(connections, "ssh_ready", fake_ready)
+    monkeypatch.setattr(connections, "editor_setup_command", lambda: "")
+    monkeypatch.setattr(connections, "_probe_ssh", fake_probe)
     monkeypatch.setattr(connections, "open_code", lambda ident: opened.append(ident))
 
     connections.connect_editor(FakeAPI(), "777", timeout=5)
@@ -114,5 +115,35 @@ def test_ssh_probe_creates_the_workspace_vs_code_opens(monkeypatch):
     monkeypatch.setattr(connections, "_tcp_ssh_banner", lambda host, port, timeout: True)
     monkeypatch.setattr(connections.subprocess, "run", lambda args, **kw: commands.append(args) or Done())
     assert connections.ssh_ready("9002", "203.0.113.10", 22022, "root", 3.0)
-    assert commands[0][-1] == f"mkdir -p {connections.WORKSPACE} || true"
+    assert f"mkdir -p {connections.WORKSPACE}" in commands[0][-1]
+    assert f"mktemp {connections.WORKSPACE}/" in commands[0][-1]
     connections.cleanup_instance("9002")
+
+
+@pytest.mark.parametrize("wait_in_background", [True, False])
+def test_both_editor_commands_wait_for_preparation(monkeypatch, wait_in_background):
+    item = Instance("777", "vastai", "gpu", "GPU", 1, "running", 0.1, "US", host="gpu.test", port=22)
+
+    class API:
+        def instance(self, ident):
+            return item
+
+    monkeypatch.setattr(connections, "require", lambda name: name)
+    monkeypatch.setattr(connections, "has_keypair", lambda ident: True)
+    monkeypatch.setattr(connections, "editor_setup_command", lambda: "setup")
+    statuses = iter([75, 0])
+    monkeypatch.setattr(connections, "_probe_ssh", lambda *args: next(statuses))
+    monkeypatch.setattr(connections, "_wait_or_cancel", lambda *args: False)
+    monkeypatch.setattr(connections, "install_alias", lambda *args: None)
+    opened = []
+    monkeypatch.setattr(connections, "open_code", opened.append)
+
+    if wait_in_background:
+        messages = []
+        assert connections.connect_editor(API(), item.id, progress=messages.append)
+        assert "Preparing VS Code Server" in messages
+    else:
+        assert connections.try_connect_editor_now(API(), item) == (False, "Preparing VS Code Server")
+        assert not opened
+        assert connections.try_connect_editor_now(API(), item) == (True, "opened")
+    assert opened == [item.id]

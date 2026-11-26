@@ -494,6 +494,9 @@ class VastClient:
             f"printf '%s\\n' '{pub_key}' >> /root/.ssh/authorized_keys && "
             "chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh"
         )
+        setup = connections.editor_setup_command()
+        if setup:
+            onstart = f"({setup} || true) && {onstart}"
         try:
             result = api_call(
                 "PUT",
