@@ -12,12 +12,11 @@ Run `crig` to open the interactive TUI and browse GPU offers or manage your rent
   <img src="assets/instances.svg" alt="Cloudrig dashboard with demo data" width="720">
 </p>
 
-## Supported Features
+## What you can do
 
-- **GPU search**: browse, filter, and sort live Vast.ai offers in the TUI or CLI (`--plain` / `--json`).
-- **One-command VS Code**: injects a throwaway SSH key at boot, tries direct SSH before proxy, and cleans up on destroy.
-- **Asynchronous VS Code warm start** prepares the remote editor while the GPU boots. Press `c` and keep working. VS Code opens automatically when the GPU is ready for it. [How it works](docs/architecture.md#vs-code-warm-start)
-- **Agent-safe controls**: auto-mints a read-only key and a PIN-locked, no-billing action key. Rent, stop, and destroy confirm on `/dev/tty` with live price checks ([security details](docs/security.md)).
+- **Find a GPU**: Browse live Vast.ai offers and sort them by price, memory, or region.
+- **Open VS Code on your GPU**: Select a rental and press `c`. Setup is asynchronous, so you can keep working until VS Code opens automatically. [How warm start works](docs/architecture.md#vs-code-warm-start)
+- **Control rentals with your PIN**: Agents can look up offers and check your rentals. For more sensitive actions like renting, stopping, or deleting a GPU, you enter your PIN. [Security details](docs/security.md)
 
 ## Install
 
@@ -27,6 +26,12 @@ crig
 ```
 
 (I will make official PyPI distribution when ready)
+
+One time setup to connect it with your Vast AI account:
+
+```bash
+crig login            # Connect Vast.ai and set your PIN
+```
 
 Try `crig --demo` without an account. Currently supports macOS and Linux.
 
