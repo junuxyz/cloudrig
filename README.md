@@ -1,8 +1,16 @@
 # Cloudrig
 
-Run cloud GPU experiments from your terminal — fast, simple, and agent-friendly.
+**Run cloud GPU experiments from your terminal — fast, simple, and agent-friendly.**
 
-![Cloudrig dashboard with demo data](assets/instances.svg)
+Run `crig` to open the interactive TUI and browse GPU offers or manage your rented GPUs.
+
+<p align="center">
+  <img src="assets/market.svg" alt="Cloudrig GPU offers with demo data" width="720">
+</p>
+
+<p align="center">
+  <img src="assets/instances.svg" alt="Cloudrig dashboard with demo data" width="720">
+</p>
 
 ## Supported Features
 
@@ -17,22 +25,24 @@ uv tool install git+https://github.com/junuxyz/cloudrig
 crig
 ```
 
+(I will make official PyPI distribution when ready)
+
 Try `crig --demo` without an account. Currently supports macOS and Linux.
 
 ## Commands
 
 ```sh
 crig                  # Open the dashboard (runs login on first use)
+crig login            # Connect Vast.ai and set your PIN
+crig logout           # Remove saved local keys
 crig --gpu [QUERY]    # Browse GPU offers (e.g. crig --gpu 4090)
 crig --rented         # List your rented GPUs
 crig NAME code        # Open VS Code on a running GPU
 crig NAME stop        # Stop a GPU (PIN required)
 crig NAME destroy     # Delete a GPU (PIN required)
-crig login            # Connect Vast.ai and set your PIN
-crig logout           # Remove saved local keys
 ```
 
-Add `--plain` or `--json` for script-friendly output.
+Add `--plain` or `--json` for script-friendly output. For example, `crig --rented --json` lists rented GPUs as JSON.
 
 ## License
 
