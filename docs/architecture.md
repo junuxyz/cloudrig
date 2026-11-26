@@ -28,6 +28,17 @@ Opening VS Code waits for the GPU to boot. When that takes a while, `crig` hands
 
 At rental startup, Cloudrig reads the build ID from your local stable VS Code and downloads the matching CLI and server into `~/.vscode-server` on the GPU. When you press `c` in the dashboard, Cloudrig waits asynchronously for setup to finish, so you can keep working. It checks that `/workspace` is writable by creating and removing a temporary file, then opens VS Code automatically. Remote SSH reuses the prepared tools when it connects. If preparation fails or the image is unsupported, Remote SSH uses its usual installer.
 
+### Time to first save
+
+We tested both modes three times on the same Vast.ai GTX 1070 rental in South Korea. Each run started with a fresh local VS Code profile and a clean remote installation directory. We timed how long it took to edit and save a file in `/workspace` using desktop VS Code, then verified the saved contents over SSH.
+
+| Startup mode | Window opening to first save (three runs) | Median wait after opening | Median wait from pressing `c` |
+| --- | --- | --- | --- |
+| Default | 20.9 s, 24.9 s, 20.5 s | 20.9 s | 22.5 s |
+| Warm start | 4.4 s, 4.6 s, 4.3 s | 4.4 s | 11.3 s |
+
+Both sets of timings start after GPU provisioning. In the warm runs, Cloudrig finished preparing the server in the background before the connection request. That preparation took 14–23 seconds. In the default runs, VS Code downloaded the server after the window opened.
+
 ## Language
 
 Cloudrig is pure Python and does not plan to add a compiled component.
