@@ -28,7 +28,7 @@ Opening VS Code waits for the GPU to boot. When that takes a while, `crig` hands
 
 At rental startup, Cloudrig reads the build ID from your local stable VS Code and downloads the matching CLI and server into `~/.vscode-server` on the GPU. When you press `c` in the dashboard, Cloudrig waits asynchronously for setup to finish, so you can keep working. It checks that `/workspace` is writable by creating and removing a temporary file, then opens VS Code automatically. Remote SSH reuses the prepared tools when it connects. If preparation fails or the image is unsupported, Remote SSH uses its usual installer.
 
-## Why Python
+## Language
 
 Cloudrig is pure Python and does not plan to add a compiled component.
 
